@@ -59,4 +59,30 @@ object ScenarioFixtures {
             Scenario.ScheduledEvent(delayMillis, TapEvent(source, gesture, 0)),
         ),
     )
+
+    /** The device disconnects while an audio capture is in progress. */
+    fun disconnectDuringAudio(
+        disconnectAfterMillis: Long = 50,
+        audioDelayMillis: Long = 200,
+    ) = Scenario(
+        disconnectAfterMillis = disconnectAfterMillis,
+        audioDelayMillis = audioDelayMillis,
+    )
+
+    /** The simulator rejects a capability because it is not in [supportedFeatures]. */
+    fun unsupportedFeatures(
+        features: Set<DeviceFeature> = setOf(DeviceFeature.BATTERY),
+    ) = Scenario(
+        supportedFeatures = features,
+    )
+
+    /** The audio stream ends without a final frame. */
+    fun missingFinalAudio() = Scenario(
+        audioError = SensesError.Protocol("missing final audio frame"),
+    )
+
+    /** A mic/speaker conflict: playback rejects while capture is active. */
+    fun micSpeakerConflict() = Scenario(
+        playAudioRejection = SensesError.Unavailable("speaker is busy: microphone capture active"),
+    )
 }

@@ -20,6 +20,8 @@ import com.nyooran.agent.senses.PresentationFormat
 import com.nyooran.agent.senses.SensesDevice
 import com.nyooran.agent.senses.SensesError
 import com.nyooran.agent.senses.TapEvent
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -65,10 +67,28 @@ class SimulatedSensesDevice(
     private val _events = MutableSharedFlow<InputEvent>(extraBufferCapacity = 64)
     override val events = _events.asSharedFlow()
 
-    private var connected = false
+    private val connected = AtomicBoolean(false)
+
+    /** Recorded surface for tests. */
+    private val _recordedPresentations = mutableListOf<DevicePresentation>()
+    private val _recordedAudio = mutableListOf<AudioPlaybackRequest>()
+    private val _clears = AtomicInteger(0)
+    private val _stops = AtomicInteger(0)
+
+    /** Presentations recorded by [present] and [clearDisplay]. */
+    val recordedPresentations: List<DevicePresentation> get() = _recordedPresentations.toList()
+
+    /** Audio playback requests recorded by [playAudio]. */
+    val recordedAudio: List<AudioPlaybackRequest> get() = _recordedAudio.toList()
+
+    /** Number of explicit clear-display calls. */
+    val clearCount: Int get() = _clears.get()
+
+    /** Number of stop/reset calls (disconnects). */
+    val stopCount: Int get() = _stops.get()
 
     override suspend fun connect(target: DeviceTarget?) = lock.withLock {
-        connected = false
+        connected.set(false)
         _state.value = DeviceState(
             isConnected = false,
             isReady = false,
@@ -93,7 +113,7 @@ class SimulatedSensesDevice(
             throw error
         }
 
-        connected = true
+        connected.set(true)
         _state.value = DeviceState(
             isConnected = true,
             isReady = true,
@@ -107,7 +127,9 @@ class SimulatedSensesDevice(
     }
 
     override suspend fun disconnect() = lock.withLock {
-        connected = false
+        if (connected.getAndSet(false)) {
+            _stops.incrementAndGet()
+        }
         deviceScope.cancel()
         _state.value = _state.value.copy(isConnected = false, isReady = false)
         _events.tryEmit(DisconnectedEvent)
@@ -116,6 +138,7 @@ class SimulatedSensesDevice(
 
     override suspend fun captureAudio(request: AudioCaptureRequest): AudioCapture {
         ensureConnected()
+        ensureFeature(DeviceFeature.AUDIO_CAPTURE)
         currentCoroutineContext().ensureActive()
 
         val error = scenario.audioError
@@ -125,6 +148,7 @@ class SimulatedSensesDevice(
             delay(scenario.audioDelayMillis.coerceAtMost(request.maxDurationMillis))
         }
         currentCoroutineContext().ensureActive()
+        ensureConnected()
 
         val bytes = if (scenario.audioFixture.isNotEmpty()) {
             scenario.audioFixture
@@ -148,6 +172,7 @@ class SimulatedSensesDevice(
 
     override suspend fun captureImage(request: ImageCaptureRequest): ImageCapture {
         ensureConnected()
+        ensureFeature(DeviceFeature.IMAGE_CAPTURE)
         currentCoroutineContext().ensureActive()
 
         val error = scenario.imageError
@@ -157,6 +182,7 @@ class SimulatedSensesDevice(
             delay(scenario.imageDelayMillis)
         }
         currentCoroutineContext().ensureActive()
+        ensureConnected()
 
         val bytes = if (scenario.imageFixture.isNotEmpty()) {
             scenario.imageFixture
@@ -184,6 +210,7 @@ class SimulatedSensesDevice(
 
     override suspend fun awaitInput(request: AwaitInputRequest): InputEvent {
         ensureConnected()
+        ensureFeature(DeviceFeature.INPUT)
         currentCoroutineContext().ensureActive()
         val event = withTimeoutOrNull(request.timeoutMillis) {
             _events.first { event ->
@@ -197,25 +224,34 @@ class SimulatedSensesDevice(
 
     override suspend fun playAudio(request: AudioPlaybackRequest) {
         ensureConnected()
+        ensureFeature(DeviceFeature.PLAYBACK)
         currentCoroutineContext().ensureActive()
 
         val error = scenario.playAudioRejection
         if (error != null) throw error
 
         if (request.volume !in 0..100) throw SensesError.Rejected("volume must be 0..100")
+
+        _recordedAudio.add(request)
     }
 
     override suspend fun present(request: DevicePresentation) {
         ensureConnected()
+        ensureFeature(DeviceFeature.PRESENTATION)
         currentCoroutineContext().ensureActive()
-        if (request.format == PresentationFormat.CLEAR) return
+        if (request.format == PresentationFormat.CLEAR) {
+            _clears.incrementAndGet()
+            return
+        }
         if (request.payload.isEmpty()) throw SensesError.Rejected("presentation payload is empty")
+        _recordedPresentations.add(request)
     }
 
     override suspend fun clearDisplay() = present(DevicePresentation(PresentationFormat.CLEAR))
 
     override suspend fun battery(): BatteryState {
         ensureConnected()
+        ensureFeature(DeviceFeature.BATTERY)
         currentCoroutineContext().ensureActive()
         return scenario.battery
     }
@@ -224,7 +260,7 @@ class SimulatedSensesDevice(
      * Manually emit an input event. Useful when a test wants to drive timing
      * itself rather than using [Scenario.ScheduledEvent].
      */
-    suspend fun emit(event: InputEvent) = _events.emit(event)
+    suspend fun emit(event: InputEvent) = _events.emit(event.withTimestamp(timeSource.currentTimeMillis()))
 
     /** Cancel any pending scheduled events and release the device scope. */
     fun close() {
@@ -232,7 +268,13 @@ class SimulatedSensesDevice(
     }
 
     private fun ensureConnected() {
-        if (!connected) throw SensesError.Disconnected("simulator is not connected")
+        if (!connected.get()) throw SensesError.Disconnected("simulator is not connected")
+    }
+
+    private fun ensureFeature(feature: DeviceFeature) {
+        if (feature !in _state.value.supportedFeatures) {
+            throw SensesError.Unavailable("Feature $feature is not supported by the simulated backend")
+        }
     }
 
     private fun scheduleDisconnect() {
@@ -247,7 +289,7 @@ class SimulatedSensesDevice(
         for ((delayMillis, event) in scenario.scheduledEvents) {
             deviceScope.launch {
                 delay(delayMillis)
-                _events.tryEmit(event)
+                _events.tryEmit(event.withTimestamp(timeSource.currentTimeMillis()))
             }
         }
     }
@@ -272,4 +314,10 @@ class SimulatedSensesDevice(
         if (bytesPerFrame <= 0) return 0
         return (byteCount / bytesPerFrame) * 1000L / format.sampleRate
     }
+}
+
+private fun InputEvent.withTimestamp(timestamp: Long): InputEvent = when (this) {
+    is TapEvent -> copy(timestamp = timestamp)
+    is ButtonEvent -> copy(timestamp = timestamp)
+    is DisconnectedEvent -> this
 }

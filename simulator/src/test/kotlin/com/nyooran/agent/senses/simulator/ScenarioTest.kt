@@ -106,4 +106,81 @@ class ScenarioTest {
         )
         assertTrue(capture.audio.size <= 1_000, "audio size ${capture.audio.size} exceeds maxBytes")
     }
+
+    @Test
+    fun recordsPresentationsAndClearsAndAudio() = runTest {
+        val device = SimulatedSensesDevice(scope = this)
+        device.connect()
+
+        device.present(com.nyooran.agent.senses.DevicePresentation(com.nyooran.agent.senses.PresentationFormat.HSD, "hello".toByteArray()))
+        device.clearDisplay()
+        device.playAudio(
+            com.nyooran.agent.senses.AudioPlaybackRequest(
+                audio = ByteArray(100),
+                format = com.nyooran.agent.senses.AudioFormat(16000, 16, 1, "pcm-s16le", "audio/pcm"),
+                volume = 80,
+            )
+        )
+        device.disconnect()
+
+        assertEquals(1, device.recordedPresentations.size)
+        assertEquals(1, device.clearCount)
+        assertEquals(1, device.recordedAudio.size)
+        assertEquals(1, device.stopCount)
+    }
+
+    @Test
+    fun unsupportedFeatureThrowsUnavailable() = runTest {
+        val device = SimulatedSensesDevice(ScenarioFixtures.unsupportedFeatures(), scope = this)
+        device.connect()
+
+        assertFailsWith<SensesError.Unavailable> {
+            device.captureAudio(AudioCaptureRequest(maxDurationMillis = 100, maxBytes = 4_096))
+        }
+    }
+
+    @Test
+    fun disconnectDuringAudioThrowsDisconnected() = runTest {
+        val scenario = ScenarioFixtures.disconnectDuringAudio(
+            disconnectAfterMillis = 50,
+            audioDelayMillis = 200,
+        )
+        val device = SimulatedSensesDevice(scenario, scope = this)
+        device.connect()
+
+        val captureJob = launch {
+            assertFailsWith<SensesError.Disconnected> {
+                device.captureAudio(AudioCaptureRequest(maxDurationMillis = 500, maxBytes = 4_096))
+            }
+        }
+
+        advanceTimeBy(201)
+        captureJob.join()
+    }
+
+    @Test
+    fun missingFinalAudioThrowsProtocol() = runTest {
+        val device = SimulatedSensesDevice(ScenarioFixtures.missingFinalAudio(), scope = this)
+        device.connect()
+
+        assertFailsWith<SensesError.Protocol> {
+            device.captureAudio(AudioCaptureRequest(maxDurationMillis = 100, maxBytes = 4_096))
+        }
+    }
+
+    @Test
+    fun micSpeakerConflictRejectsPlayback() = runTest {
+        val device = SimulatedSensesDevice(ScenarioFixtures.micSpeakerConflict(), scope = this)
+        device.connect()
+
+        assertFailsWith<SensesError.Unavailable> {
+            device.playAudio(
+                com.nyooran.agent.senses.AudioPlaybackRequest(
+                    audio = ByteArray(100),
+                    format = com.nyooran.agent.senses.AudioFormat(16000, 16, 1, "pcm-s16le", "audio/pcm"),
+                    volume = 80,
+                )
+            )
+        }
+    }
 }
