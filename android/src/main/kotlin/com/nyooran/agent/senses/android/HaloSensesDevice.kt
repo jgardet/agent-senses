@@ -164,10 +164,7 @@ class HaloSensesDevice(
     }
 
     override suspend fun playAudio(request: AudioPlaybackRequest) {
-        // Raw PCM/WAV playback is not yet supported by the backend; TTS is
-        // still handled through [audioConnection.speak]. This will be removed in
-        // AS-021 when a SpeechSynthesizer adapter is introduced.
-        throw SensesError.Unavailable("Raw audio playback is not yet supported")
+        audioConnection.playAudio(request)
     }
 
     override suspend fun present(request: DevicePresentation) = when (request.format) {

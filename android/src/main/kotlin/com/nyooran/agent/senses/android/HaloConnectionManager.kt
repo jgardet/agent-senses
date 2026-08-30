@@ -10,6 +10,8 @@ import android.content.Context
 import android.os.ParcelUuid
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import com.nyooran.agent.senses.AudioFormat
+import com.nyooran.agent.senses.AudioPlaybackRequest
 import com.nyooran.agent.senses.android.audio.PcmToWav
 import com.nyooran.agent.senses.android.audio.WavReader
 import halo.engine.AndroidBleTransport
@@ -45,6 +47,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
 import kotlin.time.Duration
@@ -74,6 +77,7 @@ interface HaloAudioConnection : HaloDisplayConnection {
     suspend fun battery(): HaloBattery
     suspend fun waitForTap(timeout: Duration = 30.seconds, kind: String? = null): HaloInputEvent
     suspend fun speak(text: String, volume: Int = 80)
+    suspend fun playAudio(request: AudioPlaybackRequest)
 }
 
 class HaloConnectionManager(
@@ -90,6 +94,7 @@ class HaloConnectionManager(
     private val _inputEvents = MutableSharedFlow<HaloInputEvent>(extraBufferCapacity = 16)
     val inputEvents: SharedFlow<HaloInputEvent> = _inputEvents.asSharedFlow()
     private val operationMutex = Mutex()
+    private val tapMutex = Mutex()
     private var scanJob: Job? = null
     private var scanCallback: ScanCallback? = null
     private var connectJob: Job? = null
@@ -323,66 +328,90 @@ class HaloConnectionManager(
     }
 
     override suspend fun waitForTap(timeout: Duration, kind: String?): HaloInputEvent =
-        withTimeout(timeout) {
-            inputEvents.first { event ->
-                kind == null || event.gesture == kind
+        tapMutex.withLock {
+            withTimeout(timeout) {
+                inputEvents.first { event ->
+                    kind == null || event.gesture == kind
+                }
             }
         }
 
     override suspend fun speak(text: String, volume: Int) {
+        val tts = initTts()
+        val ready = ttsReady.await()
+        check(ready == TextToSpeech.SUCCESS) { "Text-to-Speech initialization failed" }
+
+        val tempFile = File.createTempFile("halo_tts", ".wav", appContext.cacheDir)
+        val done = CompletableDeferred<Boolean>()
+        try {
+            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) { done.complete(true) }
+                @Deprecated("UtteranceProgressListener.onError(String?) is deprecated", level = DeprecationLevel.HIDDEN)
+                override fun onError(utteranceId: String?) { done.complete(false) }
+                override fun onStop(utteranceId: String?, interrupted: Boolean) { done.complete(false) }
+            })
+
+            val utteranceId = "halo-tts-${System.currentTimeMillis()}"
+            val result = tts.synthesizeToFile(text, null, tempFile, utteranceId)
+            require(result == TextToSpeech.SUCCESS) { "TTS synthesis request failed" }
+
+            val ok = withTimeout(60.seconds) { done.await() }
+            require(ok) { "TTS synthesis did not complete" }
+
+            val audio = FileInputStream(tempFile).use { it.readBytes() }
+            playAudio(
+                AudioPlaybackRequest(
+                    audio = audio,
+                    format = AudioFormat(16000, 16, 1, "wav", "audio/wav"),
+                    volume = volume,
+                )
+            )
+        } finally {
+            runCatching { tempFile.delete() }
+        }
+    }
+
+    override suspend fun playAudio(request: AudioPlaybackRequest) {
         requireConnection {
             val connected = checkNotNull(transport) { "Halo transport is not available" }
             check(connected.supportsAudio) { "Halo speaker is not available on this device" }
 
-            val tts = initTts()
-            val ready = ttsReady.await()
-            check(ready == TextToSpeech.SUCCESS) { "Text-to-Speech initialization failed" }
+            val startPayload = byteArrayOf(
+                0,
+                (16000 shr 8).toByte(),
+                16000.toByte(),
+                16,
+                1,
+                request.volume.coerceIn(0, 100).toByte(),
+            )
+            connected.sendMessage(HaloProtocol.SPEAKER_START, startPayload)
 
-            val tempFile = File.createTempFile("halo_tts", ".wav", appContext.cacheDir)
-            val done = CompletableDeferred<Boolean>()
-            var speakerStarted = false
             try {
-                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {}
-                    override fun onDone(utteranceId: String?) { done.complete(true) }
-                    @Deprecated("UtteranceProgressListener.onError(String?) is deprecated", level = DeprecationLevel.HIDDEN)
-                    override fun onError(utteranceId: String?) { done.complete(false) }
-                    override fun onStop(utteranceId: String?, interrupted: Boolean) { done.complete(false) }
-                })
-
-                val utteranceId = "halo-tts-${System.currentTimeMillis()}"
-                val result = tts.synthesizeToFile(text, null, tempFile, utteranceId)
-                require(result == TextToSpeech.SUCCESS) { "TTS synthesis request failed" }
-
-                val ok = withTimeout(60.seconds) { done.await() }
-                require(ok) { "TTS synthesis did not complete" }
-
-                val startPayload = byteArrayOf(
-                    0,
-                    (16000 shr 8).toByte(),
-                    16000.toByte(),
-                    16,
-                    1,
-                    volume.coerceIn(0, 100).toByte(),
-                )
-                connected.sendMessage(HaloProtocol.SPEAKER_START, startPayload)
-                speakerStarted = true
-
-                FileInputStream(tempFile).use { input ->
-                    WavReader.readPcm(input, 16000).collect { chunk ->
-                        currentCoroutineContext().ensureActive()
-                        connected.sendAudioFrame(chunk)
-                        val sleepMs = chunk.size / 2 * 1000L / 16000
-                        delay(sleepMs)
+                when (request.format.encoding) {
+                    "wav" -> {
+                        ByteArrayInputStream(request.audio).use { input ->
+                            WavReader.readPcm(input, 16000).collect { chunk ->
+                                currentCoroutineContext().ensureActive()
+                                connected.sendAudioFrame(chunk)
+                                val sleepMs = chunk.size / 2 * 1000L / 16000
+                                delay(sleepMs)
+                            }
+                        }
                     }
+                    "pcm-s16le" -> {
+                        val frameSize = 16000 * 2 * 10 / 1000 // 10 ms of 16-bit mono at 16 kHz
+                        request.audio.asSequence().chunked(frameSize).forEachIndexed { index, bytes ->
+                            currentCoroutineContext().ensureActive()
+                            connected.sendAudioFrame(bytes.toByteArray())
+                            delay(10)
+                        }
+                    }
+                    else -> throw IllegalArgumentException("Unsupported playback encoding: ${request.format.encoding}")
                 }
             } finally {
-                if (speakerStarted) {
-                    runCatching { connected.sendMessage(HaloProtocol.SPEAKER_STOP, byteArrayOf()) }
-                }
-                runCatching { tempFile.delete() }
+                runCatching { connected.sendMessage(HaloProtocol.SPEAKER_STOP, byteArrayOf()) }
             }
-            Unit
         }
     }
 
