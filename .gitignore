@@ -1,0 +1,52 @@
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+release/
+
+# Gradle files
+.gradle/
+.kotlin/
+build/
+
+# CMake intermediate files
+.cxx/
+
+# Local configuration file (sdk path)
+local.properties
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Keystore files
+*.jks
+*.keystore
+
+# Native runtime and headers (downloaded manually, not committed)
+app/libnode/
+
+# Node modules (installed via npm, not committed)
+app/src/main/assets/nodejs-project/node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
