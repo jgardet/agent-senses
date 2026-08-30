@@ -12,6 +12,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.nyooran.agent.senses.AudioFormat
 import com.nyooran.agent.senses.AudioPlaybackRequest
+import com.nyooran.agent.senses.SensesError
 import com.nyooran.agent.senses.android.audio.PcmToWav
 import com.nyooran.agent.senses.android.audio.WavReader
 import halo.engine.AndroidBleTransport
@@ -19,6 +20,7 @@ import halo.engine.AndroidSpritePacker
 import halo.engine.BluetoothGattChannel
 import halo.engine.HaloHost
 import halo.engine.HaloNotification
+import halo.engine.HaloLimitException
 import halo.engine.HaloProtocol
 import halo.engine.HaloRuntimeInstaller
 import halo.engine.HaloSession
@@ -43,6 +45,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -65,6 +68,19 @@ data class HaloDevice(val address: String, val name: String, val rssi: Int)
 data class HaloInputEvent(val source: String, val gesture: String)
 data class HaloBattery(val level: Int, val voltage: Int, val charging: Boolean)
 
+/**
+ * Hard ceiling for microphone PCM, generous enough for 30 s at 16 kHz
+ * 16-bit mono (≈ 960 KiB) while still preventing unbounded growth.
+ */
+internal const val MAX_MIC_BYTES: Long = 1_500_000
+
+/**
+ * Hard ceiling for a JPEG photo transfer. A 720×720 high-quality
+ * capture fits comfortably inside this; the runtime enforces a
+ * per-message cap of [HaloProtocol.MAX_DATA_BYTES].
+ */
+internal const val MAX_PHOTO_BYTES: Long = 3_000_000
+
 interface HaloDisplayConnection {
     val state: StateFlow<HaloConnectionState>
     suspend fun render(scene: JsonElement)
@@ -73,7 +89,7 @@ interface HaloDisplayConnection {
 
 interface HaloAudioConnection : HaloDisplayConnection {
     suspend fun listen(maxDuration: Duration = 30.seconds, gain: Int = 0, aec: Boolean = true, voice: Boolean = true): ByteArray
-    suspend fun capturePhoto(resolution: Int = 512, qualityIndex: Int = 4, pan: Int = 0, raw: Boolean = false): ByteArray
+    suspend fun capturePhoto(resolution: Int = 512, qualityIndex: Int = 4, pan: Int = 0, raw: Boolean = false, maxBytes: Long = MAX_PHOTO_BYTES): ByteArray
     suspend fun battery(): HaloBattery
     suspend fun waitForTap(timeout: Duration = 30.seconds, kind: String? = null): HaloInputEvent
     suspend fun speak(text: String, volume: Int = 80)
@@ -266,16 +282,24 @@ class HaloConnectionManager(
         val voiceByte = if (voice) 1.toByte() else 0.toByte()
 
         val session = HaloSession(connected)
-        val pcm = session.collect(
-            startCode = HaloProtocol.MICROPHONE_START,
-            startPayload = byteArrayOf(gainByte, aecByte, voiceByte),
-            stopCode = HaloProtocol.MICROPHONE_STOP,
-            chunkCode = HaloProtocol.AUDIO_CHUNK,
-            finalCode = HaloProtocol.AUDIO_FINAL,
-            timeout = maxDuration,
-            maxBytes = MAX_MIC_BYTES,
-        )
-        PcmToWav.fromPcm16(pcm)
+        try {
+            val pcm = session.collect(
+                startCode = HaloProtocol.MICROPHONE_START,
+                startPayload = byteArrayOf(gainByte, aecByte, voiceByte),
+                stopCode = HaloProtocol.MICROPHONE_STOP,
+                chunkCode = HaloProtocol.AUDIO_CHUNK,
+                finalCode = HaloProtocol.AUDIO_FINAL,
+                timeout = maxDuration + 2.seconds,
+                maxBytes = minOf(MAX_MIC_BYTES, 2_000_000L),
+                stopAfter = maxDuration,
+            )
+            if (pcm.isEmpty()) throw SensesError.Protocol("Microphone capture returned no audio")
+            PcmToWav.fromPcm16(pcm)
+        } catch (e: HaloLimitException) {
+            throw SensesError.LimitExceeded(e.message ?: "audio limit exceeded")
+        } catch (e: TimeoutCancellationException) {
+            throw SensesError.Timeout("listen exceeded $maxDuration")
+        }
     }
 
     override suspend fun capturePhoto(
@@ -283,10 +307,21 @@ class HaloConnectionManager(
         qualityIndex: Int,
         pan: Int,
         raw: Boolean,
+        maxBytes: Long,
     ): ByteArray = requireConnection {
+        if (resolution != 640) {
+            throw SensesError.Rejected("Camera resolution $resolution is not supported by this firmware profile; use 640")
+        }
+        if (pan != 0) {
+            throw SensesError.Rejected("Pan is not supported by this firmware profile")
+        }
+        if (raw) {
+            throw SensesError.Unavailable("Raw camera capture is not supported")
+        }
+
         val connected = checkNotNull(transport) { "Halo transport is not available" }
-        val halfRes = (resolution / 2).coerceIn(128, 360)
-        val panShifted = (pan + 140).coerceIn(0, 280)
+        val halfRes = 320
+        val panShifted = 140
         val quality = qualityIndex.coerceIn(0, 4)
         val payload = byteArrayOf(
             quality.toByte(),
@@ -294,36 +329,48 @@ class HaloConnectionManager(
             halfRes.toByte(),
             (panShifted shr 8).toByte(),
             panShifted.toByte(),
-            if (raw) 1.toByte() else 0.toByte(),
+            0,
         )
 
         val session = HaloSession(connected)
-        session.collect(
-            startCode = HaloProtocol.CAPTURE_PHOTO,
-            startPayload = payload,
-            chunkCode = HaloProtocol.PHOTO_JPEG,
-            finalCode = HaloProtocol.PHOTO_FINAL,
-            timeout = 30.seconds,
-            maxBytes = MAX_PHOTO_BYTES,
-        )
+        try {
+            val jpeg = session.collect(
+                startCode = HaloProtocol.CAPTURE_PHOTO,
+                startPayload = payload,
+                chunkCode = HaloProtocol.PHOTO_JPEG,
+                finalCode = HaloProtocol.PHOTO_FINAL,
+                timeout = 30.seconds,
+                maxBytes = maxBytes.coerceAtMost(MAX_PHOTO_BYTES),
+            )
+            if (jpeg.isEmpty()) throw SensesError.Protocol("Camera capture returned no image")
+            jpeg
+        } catch (e: HaloLimitException) {
+            throw SensesError.LimitExceeded(e.message ?: "photo limit exceeded")
+        } catch (e: TimeoutCancellationException) {
+            throw SensesError.Timeout("photo capture exceeded 30 seconds")
+        }
     }
 
     override suspend fun battery(): HaloBattery = requireConnection {
         val connected = checkNotNull(transport) { "Halo transport is not available" }
         val session = HaloSession(connected)
-        val payload = session.requestResponse(
-            requestCode = HaloProtocol.DEVICE_STATUS,
-            requestPayload = byteArrayOf(),
-            responseCode = HaloProtocol.DEVICE_STATUS,
-            timeout = 5.seconds,
-        )
-        if (payload.size >= 4) {
-            val level = payload[0].toInt() and 0xff
-            val voltage = (payload[1].toInt() and 0xff) shl 8 or (payload[2].toInt() and 0xff)
-            val charging = payload[3].toInt() != 0
-            HaloBattery(level, voltage, charging)
-        } else {
-            HaloBattery(0, 0, false)
+        try {
+            val payload = session.requestResponse(
+                requestCode = HaloProtocol.DEVICE_STATUS,
+                requestPayload = byteArrayOf(),
+                responseCode = HaloProtocol.DEVICE_STATUS,
+                timeout = 5.seconds,
+            )
+            if (payload.size >= 4) {
+                val level = payload[0].toInt() and 0xff
+                val voltage = (payload[1].toInt() and 0xff) shl 8 or (payload[2].toInt() and 0xff)
+                val charging = payload[3].toInt() != 0
+                HaloBattery(level, voltage, charging)
+            } else {
+                throw SensesError.Protocol("Battery payload too short: ${payload.size} bytes")
+            }
+        } catch (e: TimeoutCancellationException) {
+            throw SensesError.Timeout("battery query timed out")
         }
     }
 
@@ -448,17 +495,5 @@ class HaloConnectionManager(
     fun isBluetoothEnabled(): Boolean = adapter?.isEnabled == true
 
     companion object {
-        /**
-         * Hard ceiling for microphone PCM, generous enough for 30 s at 16 kHz
-         * 16-bit mono (≈ 960 KiB) while still preventing unbounded growth.
-         */
-        const val MAX_MIC_BYTES: Long = 1_500_000
-
-        /**
-         * Hard ceiling for a JPEG photo transfer. A 720×720 high-quality
-         * capture fits comfortably inside this; the runtime enforces a
-         * per-message cap of [HaloProtocol.MAX_DATA_BYTES].
-         */
-        const val MAX_PHOTO_BYTES: Long = 3_000_000
     }
 }

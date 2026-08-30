@@ -138,14 +138,16 @@ class HaloSensesDevice(
             qualityIndex = request.qualityIndex,
             pan = request.pan,
             raw = request.raw,
+            maxBytes = request.maxBytes.toLong(),
         )
+        val actualResolution = if (request.resolution == 640) request.resolution else 640
         return ImageCapture(
             image = jpeg,
             format = ImageFormat(
                 encoding = "jpeg",
                 mime = "image/jpeg",
-                width = request.resolution,
-                height = request.resolution,
+                width = actualResolution,
+                height = actualResolution,
             ),
             isRaw = request.raw,
         )
