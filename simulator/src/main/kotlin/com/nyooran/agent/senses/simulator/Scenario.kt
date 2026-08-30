@@ -34,6 +34,9 @@ data class Scenario(
     val scheduledEvents: List<ScheduledEvent> = emptyList(),
     val maxDataPayload: Int = 512,
     val maxLuaPayload: Int = 512,
+    val packetDelayMillis: Long = 0,
+    val droppedPacketCount: Int = 0,
+    val packetRejection: SensesError? = null,
 ) {
     data class ScheduledEvent(
         val delayMillis: Long,

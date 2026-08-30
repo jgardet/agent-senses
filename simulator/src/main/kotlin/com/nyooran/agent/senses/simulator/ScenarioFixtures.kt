@@ -85,4 +85,19 @@ object ScenarioFixtures {
     fun micSpeakerConflict() = Scenario(
         playAudioRejection = SensesError.Unavailable("speaker is busy: microphone capture active"),
     )
+
+    /** The first [count] host packets are silently dropped. */
+    fun dropFirstPackets(count: Int = 1) = Scenario(
+        droppedPacketCount = count,
+    )
+
+    /** Every host packet is delayed by [delayMillis]. */
+    fun delayedPackets(delayMillis: Long = 50) = Scenario(
+        packetDelayMillis = delayMillis,
+    )
+
+    /** The transport rejects the next host packet with [error]. */
+    fun packetRejection(error: SensesError = SensesError.Unavailable("simulated transport failure")) = Scenario(
+        packetRejection = error,
+    )
 }

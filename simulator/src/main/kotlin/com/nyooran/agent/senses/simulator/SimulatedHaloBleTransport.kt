@@ -6,6 +6,7 @@ import halo.engine.HaloMessage
 import halo.engine.HaloProtocol
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +41,7 @@ class SimulatedHaloBleTransport(
 
     private val connected = AtomicBoolean(false)
     private val activeStream = AtomicReference<Job?>(null)
+    private val packetCount = AtomicInteger(0)
 
     private val _recordedLua = mutableListOf<String>()
     private val _recordedHrp = mutableListOf<ByteArray>()
@@ -71,12 +73,14 @@ class SimulatedHaloBleTransport(
     }
 
     override suspend fun sendLua(lua: String) {
+        if (!applyReliability()) return
         _recordedLua.add(lua)
         _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
     }
 
     override suspend fun sendMessage(code: Int, payload: ByteArray) {
         if (!connected.get()) return
+        if (!applyReliability()) return
         when (code) {
             HaloProtocol.MICROPHONE_START -> startStream(payload, chunkCode = HaloProtocol.AUDIO_CHUNK, finalCode = HaloProtocol.AUDIO_FINAL, fixture = audioFixture())
             HaloProtocol.MICROPHONE_STOP -> stopActiveStream(HaloProtocol.AUDIO_FINAL)
@@ -92,11 +96,13 @@ class SimulatedHaloBleTransport(
     }
 
     override suspend fun sendData(bytes: ByteArray) {
+        if (!applyReliability()) return
         _recordedHrp.add(bytes)
         _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
     }
 
     override suspend fun sendAudioFrame(frame: ByteArray) {
+        if (!applyReliability()) return
         _recordedAudioFrames.add(frame)
         _speakerAudio.write(frame)
     }
@@ -143,6 +149,19 @@ class SimulatedHaloBleTransport(
     private fun stopActiveStream(finalCode: Int) {
         activeStream.getAndSet(null)?.cancel()
         _messages.tryEmit(HaloMessage(finalCode, byteArrayOf()))
+    }
+
+    /**
+     * Apply the scenario's reliability policy to the next host-to-device packet.
+     * Returns `false` when the packet is dropped.
+     */
+    private suspend fun applyReliability(): Boolean {
+        scenario.packetRejection?.let { throw it }
+        if (scenario.packetDelayMillis > 0) {
+            delay(scenario.packetDelayMillis)
+        }
+        val count = packetCount.incrementAndGet()
+        return count > scenario.droppedPacketCount
     }
 
     private fun audioFixture(): ByteArray {

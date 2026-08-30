@@ -1,13 +1,16 @@
 package com.nyooran.agent.senses.simulator
 
+import com.nyooran.agent.senses.SensesError
 import halo.engine.HaloProtocol
 import halo.engine.HaloSession
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -107,5 +110,43 @@ class SimulatedHaloBleTransportTest {
 
         assertEquals(2, transport.recordedAudioFrames.size)
         assertEquals(512, transport.speakerAudio.size)
+    }
+
+    @Test
+    fun droppedPacketsAreNotRecorded() = runTest {
+        val scenario = ScenarioFixtures.dropFirstPackets(count = 2)
+        val transport = SimulatedHaloBleTransport(scenario, scope = this)
+        transport.connect()
+
+        // First two frames are dropped.
+        transport.sendAudioFrame(ByteArray(10))
+        transport.sendAudioFrame(ByteArray(10))
+        transport.sendAudioFrame(ByteArray(10))
+
+        assertEquals(1, transport.recordedAudioFrames.size)
+    }
+
+    @Test
+    fun packetDelayAddsLatency() = runTest {
+        val scenario = ScenarioFixtures.delayedPackets(delayMillis = 100)
+        val transport = SimulatedHaloBleTransport(scenario, scope = this)
+        transport.connect()
+
+        val start = currentTime
+        transport.sendData(byteArrayOf(1))
+        val elapsed = currentTime - start
+
+        assertTrue(elapsed >= 100, "expected at least 100ms delay, got $elapsed")
+    }
+
+    @Test
+    fun packetRejectionThrows() = runTest {
+        val scenario = ScenarioFixtures.packetRejection()
+        val transport = SimulatedHaloBleTransport(scenario, scope = this)
+        transport.connect()
+
+        assertFailsWith<SensesError.Unavailable> {
+            transport.sendMessage(HaloProtocol.DEVICE_STATUS, byteArrayOf())
+        }
     }
 }
