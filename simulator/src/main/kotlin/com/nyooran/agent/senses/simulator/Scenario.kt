@@ -32,6 +32,8 @@ data class Scenario(
     val imageError: SensesError? = null,
     val playAudioRejection: SensesError? = null,
     val scheduledEvents: List<ScheduledEvent> = emptyList(),
+    val maxDataPayload: Int = 512,
+    val maxLuaPayload: Int = 512,
 ) {
     data class ScheduledEvent(
         val delayMillis: Long,
