@@ -102,6 +102,20 @@ data class SpeakResponse(
     val provenance: ProvenanceDto,
 )
 
+// ------------------------------------------------------------------ say (semantic TTS → playback)
+
+@Serializable
+data class SayRequest(
+    val endpoint_id: String? = null,
+    val text: String,
+)
+
+@Serializable
+data class SayResponse(
+    val tts_provenance: ProvenanceDto,
+    val output_provenance: ProvenanceDto,
+)
+
 // ------------------------------------------------------------------ present
 
 @Serializable

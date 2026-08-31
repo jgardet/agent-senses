@@ -20,6 +20,7 @@ include(":halo")
 include(":android")
 include(":simulator")
 include(":routes")
+include(":orchestration")
 
 val haloEngineDir = providers.gradleProperty("haloEngineDir").orElse("../graphic-engine-halo").get()
 includeBuild(haloEngineDir) {

@@ -1,6 +1,7 @@
 package com.nyooran.agent.senses.routes
 
 import com.nyooran.agent.senses.*
+import com.nyooran.agent.senses.orchestration.SemanticSenseWorkflows
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
@@ -28,6 +29,7 @@ import java.util.Base64
 fun Route.senseCapabilityRoutes(
     registry: SenseEndpointRegistry,
     authToken: String,
+    workflows: SemanticSenseWorkflows? = null,
 ) {
     val json = Json { ignoreUnknownKeys = true }
 
@@ -235,6 +237,43 @@ fun Route.senseCapabilityRoutes(
             respondError(call, e)
         } catch (e: Exception) {
             respondError(call, SensesError.Internal(e.message ?: "speak failed"))
+        }
+    }
+
+    // ------------------------------------------------------------------ say (semantic TTS → playback)
+
+    post("/v1/sense/say") {
+        if (!checkAuth(call, authToken)) return@post
+        if (workflows == null) {
+            respondError(call, SensesError.Unavailable("semantic workflows not configured"))
+            return@post
+        }
+        val req = safeReceive<SayRequest>(call, json) ?: return@post
+        if (req.text.isBlank()) {
+            respondError(call, SensesError.Rejected("text must not be blank"))
+            return@post
+        }
+        val endpointId = req.endpoint_id?.let { EndpointId(it) }
+        try {
+            val result = workflows.speakText(req.text, endpointId)
+            result.fold(
+                onSuccess = { r ->
+                    call.respond(SayResponse(
+                        tts_provenance = r.ttsProvenance.toDto(),
+                        output_provenance = r.outputProvenance.toDto(),
+                    ))
+                },
+                onFailure = { e ->
+                    when (e) {
+                        is SensesError -> respondError(call, e)
+                        else -> respondError(call, SensesError.Internal(e.message ?: "say failed"))
+                    }
+                },
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            respondError(call, SensesError.Internal(e.message ?: "say failed"))
         }
     }
 
