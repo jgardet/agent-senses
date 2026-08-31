@@ -496,6 +496,12 @@ class HaloConnectionManager(
 
     fun close() {
         stopScan()
+        textToSpeech?.let {
+            runCatching { it.stop() }
+            runCatching { it.shutdown() }
+            textToSpeech = null
+            if (!ttsReady.isCompleted) ttsReady.cancel()
+        }
         scope.launch(Dispatchers.IO) { disconnect() }
     }
 
