@@ -1,10 +1,16 @@
 package com.nyooran.agent.senses
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
@@ -60,18 +66,25 @@ class SenseEndpointRegistry {
     private val operationCounter = AtomicLong(0)
     private val bindMutex = Mutex()
 
+    /** Active operations per endpoint, keyed by operation ID. */
+    private val activeOperations = ConcurrentHashMap<EndpointId, MutableMap<String, Job>>()
+
+    /** Grace period for active operations to complete before forced cancellation. */
+    var cancellationGracePeriodMillis: Long = 1000L
+
     /**
      * Bind an endpoint to the session.
      *
      * If an endpoint with the same ID is already bound, it is replaced
      * atomically: the old endpoint's active operations are cancelled
-     * and it is disconnected before the new one is connected.
+     * (with a grace period), it is disconnected, and then the new one
+     * is connected.
      */
     suspend fun bind(endpoint: SenseEndpoint) = bindMutex.withLock {
         val id = endpoint.profile.endpointId
         val existing = endpoints[id]
         if (existing != null) {
-            existing.disconnect()
+            awaitCancellationAndDisconnect(id, existing)
         }
         endpoints[id] = endpoint
         refreshProfiles()
@@ -80,11 +93,14 @@ class SenseEndpointRegistry {
     /**
      * Unbind an endpoint from the session.
      *
-     * Cancels active operations and disconnects the endpoint.
+     * Cancels active operations (with a grace period) and disconnects
+     * the endpoint.
      */
     suspend fun unbind(endpointId: EndpointId) = bindMutex.withLock {
         val endpoint = endpoints.remove(endpointId)
-        endpoint?.disconnect()
+        if (endpoint != null) {
+            awaitCancellationAndDisconnect(endpointId, endpoint)
+        }
         refreshProfiles()
     }
 
@@ -92,11 +108,32 @@ class SenseEndpointRegistry {
      * Unbind all endpoints.
      */
     suspend fun unbindAll() = bindMutex.withLock {
-        for (endpoint in endpoints.values) {
-            runCatching { endpoint.disconnect() }
+        for ((id, endpoint) in endpoints.entries) {
+            runCatching { awaitCancellationAndDisconnect(id, endpoint) }
         }
         endpoints.clear()
         refreshProfiles()
+    }
+
+    /**
+     * Cancel active operations on [endpointId], wait for them to complete
+     * (up to [cancellationGracePeriodMillis]), then disconnect the endpoint.
+     */
+    private suspend fun awaitCancellationAndDisconnect(endpointId: EndpointId, endpoint: SenseEndpoint) {
+        val ops = activeOperations.remove(endpointId)
+        if (ops != null && ops.isNotEmpty()) {
+            // Cancel all active operations
+            for (job in ops.values) {
+                job.cancel()
+            }
+            // Wait for them to complete within the grace period
+            withTimeoutOrNull(cancellationGracePeriodMillis) {
+                for (job in ops.values) {
+                    job.join()
+                }
+            }
+        }
+        runCatching { endpoint.disconnect() }
     }
 
     /**
@@ -117,6 +154,29 @@ class SenseEndpointRegistry {
      * Generate a unique operation ID for provenance.
      */
     fun nextOperationId(): String = "op-${operationCounter.incrementAndGet()}"
+
+    /**
+     * Register an active operation for [endpointId].
+     *
+     * The operation's [Job] is tracked so it can be cancelled when the
+     * endpoint is unbound or replaced. Call [completeOperation] when done.
+     */
+    fun registerOperation(endpointId: EndpointId, operationId: String, job: Job) {
+        activeOperations.getOrPut(endpointId) { ConcurrentHashMap() }[operationId] = job
+    }
+
+    /**
+     * Mark an operation as completed and remove it from tracking.
+     */
+    fun completeOperation(endpointId: EndpointId, operationId: String) {
+        activeOperations[endpointId]?.remove(operationId)
+    }
+
+    /**
+     * Count active operations for [endpointId].
+     */
+    fun activeOperationCount(endpointId: EndpointId): Int =
+        activeOperations[endpointId]?.size ?: 0
 
     /**
      * Resolve an endpoint for [capability], requiring explicit selection

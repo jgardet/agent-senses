@@ -1,5 +1,9 @@
 package com.nyooran.agent.senses
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -149,5 +153,105 @@ class SenseEndpointRegistryTest {
         val registry = SenseEndpointRegistry()
         val ids = (1..100).map { registry.nextOperationId() }.toSet()
         assertEquals(100, ids.size)
+    }
+
+    // ------------------------------------------------------------------ operation tracking
+
+    @Test
+    fun registerAndCompleteOperation() = runTest {
+        val registry = SenseEndpointRegistry()
+        val endpoint = FakeEndpoint(makeProfile("halo-1"))
+        registry.bind(endpoint)
+
+        val job = launch { delay(10000) }
+        registry.registerOperation(EndpointId("halo-1"), "op-1", job)
+        assertEquals(1, registry.activeOperationCount(EndpointId("halo-1")))
+
+        registry.completeOperation(EndpointId("halo-1"), "op-1")
+        assertEquals(0, registry.activeOperationCount(EndpointId("halo-1")))
+        job.cancel()
+    }
+
+    @Test
+    fun unbindCancelsActiveOperations() = runTest {
+        val registry = SenseEndpointRegistry()
+        registry.cancellationGracePeriodMillis = 500
+        val endpoint = FakeEndpoint(makeProfile("halo-1"))
+        registry.bind(endpoint)
+
+        var operationCancelled = false
+        val job = launch {
+            try { delay(10000) } catch (e: CancellationException) { operationCancelled = true }
+        }
+        runCurrent()
+        registry.registerOperation(EndpointId("halo-1"), "op-1", job)
+        assertEquals(1, registry.activeOperationCount(EndpointId("halo-1")))
+
+        registry.unbind(EndpointId("halo-1"))
+        runCurrent()
+        assertTrue(operationCancelled, "operation should have been cancelled")
+        assertTrue(endpoint.disconnected)
+    }
+
+    @Test
+    fun bindReplacesAndCancelsOldOperations() = runTest {
+        val registry = SenseEndpointRegistry()
+        registry.cancellationGracePeriodMillis = 500
+        val ep1 = FakeEndpoint(makeProfile("halo-1"))
+        val ep2 = FakeEndpoint(makeProfile("halo-1"))
+        registry.bind(ep1)
+
+        var operationCancelled = false
+        val job = launch {
+            try { delay(10000) } catch (e: CancellationException) { operationCancelled = true }
+        }
+        runCurrent()
+        registry.registerOperation(EndpointId("halo-1"), "op-1", job)
+
+        registry.bind(ep2)  // replace ep1 with ep2
+        runCurrent()
+        assertTrue(operationCancelled, "old operation should have been cancelled")
+        assertTrue(ep1.disconnected)
+        assertEquals(ep2, registry.get(EndpointId("halo-1")))
+    }
+
+    @Test
+    fun unbindAllCancelsAllOperations() = runTest {
+        val registry = SenseEndpointRegistry()
+        registry.cancellationGracePeriodMillis = 500
+        val ep1 = FakeEndpoint(makeProfile("halo-1"))
+        val ep2 = FakeEndpoint(makeProfile("chat-1", kind = BackendKind.CHAT))
+        registry.bind(ep1)
+        registry.bind(ep2)
+
+        var op1Cancelled = false
+        var op2Cancelled = false
+        val job1 = launch { try { delay(10000) } catch (e: CancellationException) { op1Cancelled = true } }
+        val job2 = launch { try { delay(10000) } catch (e: CancellationException) { op2Cancelled = true } }
+        runCurrent()
+        registry.registerOperation(EndpointId("halo-1"), "op-1", job1)
+        registry.registerOperation(EndpointId("chat-1"), "op-2", job2)
+
+        registry.unbindAll()
+        runCurrent()
+        assertTrue(op1Cancelled)
+        assertTrue(op2Cancelled)
+        assertTrue(ep1.disconnected)
+        assertTrue(ep2.disconnected)
+    }
+
+    @Test
+    fun unbindWithoutOperationsJustDisconnects() = runTest {
+        val registry = SenseEndpointRegistry()
+        val endpoint = FakeEndpoint(makeProfile("halo-1"))
+        registry.bind(endpoint)
+        registry.unbind(EndpointId("halo-1"))
+        assertTrue(endpoint.disconnected)
+    }
+
+    @Test
+    fun activeOperationCountReturnsZeroForUnknownEndpoint() {
+        val registry = SenseEndpointRegistry()
+        assertEquals(0, registry.activeOperationCount(EndpointId("unknown")))
     }
 }
