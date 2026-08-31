@@ -117,6 +117,7 @@ class HaloSensesDevice(
             gain = request.gain,
             aec = request.aec,
             voice = request.voice,
+            maxBytes = request.maxBytes.toLong(),
         )
         val durationMs = estimateWavDurationMs(wav)
         return AudioCapture(

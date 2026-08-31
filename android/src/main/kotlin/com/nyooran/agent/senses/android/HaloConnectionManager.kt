@@ -89,7 +89,7 @@ interface HaloDisplayConnection {
 }
 
 interface HaloAudioConnection : HaloDisplayConnection {
-    suspend fun listen(maxDuration: Duration = 30.seconds, gain: Int = 0, aec: Boolean = true, voice: Boolean = true): ByteArray
+    suspend fun listen(maxDuration: Duration = 30.seconds, gain: Int = 0, aec: Boolean = true, voice: Boolean = true, maxBytes: Long = MAX_MIC_BYTES): ByteArray
     suspend fun capturePhoto(resolution: Int = 512, qualityIndex: Int = 4, pan: Int = 0, raw: Boolean = false, maxBytes: Long = MAX_PHOTO_BYTES): ByteArray
     suspend fun battery(): HaloBattery
     suspend fun waitForTap(timeout: Duration = 30.seconds, kind: String? = null): HaloInputEvent
@@ -276,6 +276,7 @@ class HaloConnectionManager(
         gain: Int,
         aec: Boolean,
         voice: Boolean,
+        maxBytes: Long,
     ): ByteArray = requireConnection {
         val connected = checkNotNull(transport) { "Halo transport is not available" }
         val gainByte = (gain + 10).coerceIn(0, 20).toByte()
@@ -291,7 +292,7 @@ class HaloConnectionManager(
                 chunkCode = HaloProtocol.AUDIO_CHUNK,
                 finalCode = HaloProtocol.AUDIO_FINAL,
                 timeout = maxDuration + 2.seconds,
-                maxBytes = minOf(MAX_MIC_BYTES, 2_000_000L),
+                maxBytes = minOf(MAX_MIC_BYTES, maxBytes),
                 stopAfter = maxDuration,
             )
             if (pcm.isEmpty()) throw SensesError.Protocol("Microphone capture returned no audio")
