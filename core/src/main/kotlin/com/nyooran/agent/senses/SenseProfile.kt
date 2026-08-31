@@ -43,6 +43,9 @@ enum class BackendKind {
 
     /** Deterministic in-process simulation for testing. */
     SIMULATOR,
+
+    /** On-device model inference (Gemma, TTS). */
+    MODEL,
 }
 
 /**
