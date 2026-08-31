@@ -120,9 +120,10 @@ data class AudioOutputRequest(
 data class ImageInputRequest(
     val resolution: Int,
     val qualityIndex: Int,
-    val pan: Int = 0,
     val raw: Boolean = false,
     val maxBytes: Int,
+    /** Device-specific capture parameters (e.g. pan for Halo). */
+    val deviceOptions: Map<String, Any> = emptyMap(),
     override val timeoutMillis: Long = 10_000,
 ) : SenseRequest
 
