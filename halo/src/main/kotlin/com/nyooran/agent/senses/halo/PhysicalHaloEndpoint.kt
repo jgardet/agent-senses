@@ -4,11 +4,15 @@ import com.nyooran.agent.senses.*
 import halo.engine.HaloBleTransport
 import halo.engine.HaloProtocol
 import halo.engine.HaloSession
+import halo.engine.HsdHrpCompiler
+import halo.engine.HsdValidator
+import halo.engine.SpritePacker
 import halo.engine.display.HrpRenderer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.Json
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -43,12 +47,15 @@ class PhysicalHaloEndpoint(
         val maxAudioBytes: Long = 1_048_576,
         val maxImageBytes: Long = 65536,
         val maxHrpBytes: Int = 4096,
+        val maxHsdBytes: Int = 65_536,
         val audioFormat: AudioFormat = AudioFormat(16000, 16, 1, "wav", "audio/wav"),
         val imageFormat: ImageFormat = ImageFormat("jpeg", "image/jpeg", 640, 640),
+        val spritePacker: SpritePacker? = null,
     )
 
     private val session = HaloSession(transport)
     private val renderer = HrpRenderer()
+    private val json = Json { ignoreUnknownKeys = true }
 
     private val _state = MutableStateFlow(EndpointState.DISCONNECTED)
     val state: StateFlow<EndpointState> = _state.asStateFlow()
@@ -212,17 +219,43 @@ class PhysicalHaloEndpoint(
 
     override suspend fun visualOutput(request: VisualOutputRequest): VisualOutputResult {
         if (request.content.kind != VisualContent.VisualKind.DEVICE_NATIVE) {
-            throw SensesError.Rejected("Halo visual output only supports DEVICE_NATIVE (HRP)")
+            throw SensesError.Rejected("Halo visual output only supports DEVICE_NATIVE (HSD or HRP)")
         }
-        if (request.content.payload.size > config.maxHrpBytes) {
-            throw SensesError.LimitExceeded("HRP payload ${request.content.payload.size} exceeds limit ${config.maxHrpBytes}")
+
+        // Compile HSD → HRP if the content is HSD; pass through if already HRP.
+        val hrpPayload = when (request.content.format ?: "hrp") {
+            "hsd" -> {
+                val packer = config.spritePacker
+                    ?: throw SensesError.Rejected("HSD compilation requires a SpritePacker")
+                if (request.content.payload.size > config.maxHsdBytes) {
+                    throw SensesError.LimitExceeded("HSD payload ${request.content.payload.size} exceeds limit ${config.maxHsdBytes}")
+                }
+                val scene = try {
+                    json.parseToJsonElement(request.content.payload.toString(Charsets.UTF_8))
+                } catch (e: Exception) {
+                    throw SensesError.Rejected("Invalid HSD JSON: ${e.message}")
+                }
+                try {
+                    HsdHrpCompiler(packer).compile(scene)
+                } catch (e: IllegalArgumentException) {
+                    throw SensesError.Rejected("HSD compilation failed: ${e.message}")
+                }
+            }
+            "hrp" -> {
+                if (request.content.payload.size > config.maxHrpBytes) {
+                    throw SensesError.LimitExceeded("HRP payload ${request.content.payload.size} exceeds limit ${config.maxHrpBytes}")
+                }
+                request.content.payload
+            }
+            else -> throw SensesError.Rejected("Unsupported device_native format: ${request.content.format}")
         }
+
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
-        renderer.render(request.content.payload)
+        renderer.render(hrpPayload)
         session.requestResponse(
             requestCode = HaloProtocol.HRP,
-            requestPayload = request.content.payload,
+            requestPayload = hrpPayload,
             responseCode = HaloProtocol.STATUS,
             timeout = config.operationTimeout,
         )
@@ -235,6 +268,8 @@ class PhysicalHaloEndpoint(
                 backendKind = BackendKind.PHYSICAL,
                 capability = SenseCapability.VisualOutput,
                 origin = ResultOrigin.DISPLAY,
+                transformations = if (request.content.format == "hsd")
+                    listOf(Transformation.PRESENTATION_COMPILATION) else emptyList(),
                 startedAt = startedAt,
                 completedAt = completedAt,
             ),

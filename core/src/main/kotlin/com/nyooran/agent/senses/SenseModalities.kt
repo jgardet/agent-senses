@@ -28,11 +28,16 @@ enum class TextFormat { PLAIN, MARKDOWN }
 
 /**
  * Visual presentation content. The [kind] determines how [payload]
- * is interpreted by the endpoint.
+ * is interpreted by the endpoint. For [VisualKind.DEVICE_NATIVE], the
+ * [format] field identifies the content format (e.g. "hsd" for Halo
+ * Scene Description, "hrp" for pre-compiled Halo Render Protocol).
+ * The endpoint uses [format] to decide whether compilation is needed.
  */
 data class VisualContent(
     val kind: VisualKind,
     val payload: ByteArray,
+    /** Content format for DEVICE_NATIVE (e.g. "hsd", "hrp"). Null for IMAGE/TEXT. */
+    val format: String? = null,
     /** True if this presentation should replace the current one. */
     val replaceCurrent: Boolean = true,
 ) {

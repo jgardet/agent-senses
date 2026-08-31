@@ -122,6 +122,7 @@ data class SayResponse(
 data class PresentRequest(
     val endpoint_id: String? = null,
     val kind: String,  // "device_native", "image", "text"
+    val format: String? = null,  // for device_native: "hsd", "hrp", etc.
     val payload_base64: String? = null,
     val text: String? = null,
     val timeout_millis: Long = 30000,

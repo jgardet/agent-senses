@@ -304,7 +304,7 @@ fun Route.senseCapabilityRoutes(
             ByteArray(0)
         }
         val senseReq = VisualOutputRequest(
-            content = VisualContent(kind, payload),
+            content = VisualContent(kind, payload, format = req.format),
             timeoutMillis = req.timeout_millis,
         )
         val validationError = RequestValidator.validate(SenseCapability.VisualOutput, senseReq, endpoint.profile)
