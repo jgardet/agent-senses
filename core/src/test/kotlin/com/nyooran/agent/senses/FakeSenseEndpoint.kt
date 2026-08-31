@@ -124,7 +124,7 @@ class FakeSenseEndpoint(
         return ImageInputResult(
             image = ByteArray(100),
             format = ImageFormat("jpeg", "image/jpeg", 640, 640),
-            isRaw = request.raw,
+            isRaw = request.deviceOptions["raw"] as? Boolean ?: false,
             provenance = Provenance(
                 operationId = "op-image",
                 endpointId = profile.endpointId,

@@ -71,7 +71,6 @@ class SemanticSenseWorkflows(
         val endpoint = resolve(endpointId, SenseCapability.ImageInput)
         val imageResult = endpoint.imageInput(ImageInputRequest(
             resolution = 640,
-            qualityIndex = 0,
             maxBytes = 65536,
         ))
         val observation = visionModel.observe(imageResult.image, imageResult.format, prompt)

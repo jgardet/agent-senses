@@ -160,7 +160,7 @@ class SimulatedHaloEndpointTest {
             imageFormat = ImageFormat("jpeg", "image/jpeg", 640, 640),
         ))
         ep.connect()
-        val result = ep.imageInput(ImageInputRequest(resolution = 640, qualityIndex = 0, maxBytes = 65536))
+        val result = ep.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536))
         assertEquals("jpeg", result.format.encoding)
         assertEquals(640, result.format.width)
         assertEquals("halo-default", result.provenance.fixtureId)

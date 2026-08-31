@@ -220,7 +220,7 @@ class SimulatedSensesDevice(
         return ImageCapture(
             image = bytes,
             format = format,
-            isRaw = request.raw,
+            isRaw = request.deviceOptions["raw"] as? Boolean ?: false,
         )
     }
 

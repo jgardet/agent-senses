@@ -79,7 +79,7 @@ class PhysicalHaloEndpointTest {
         val ep = makeEndpoint()
         ep.connect()
         assertFailsWith<SensesError.Rejected> {
-            ep.imageInput(ImageInputRequest(resolution = 640, qualityIndex = 0, maxBytes = 65536, raw = true))
+            ep.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536, deviceOptions = mapOf("raw" to true)))
         }
     }
 
@@ -88,7 +88,7 @@ class PhysicalHaloEndpointTest {
         val ep = makeEndpoint()
         ep.connect()
         assertFailsWith<SensesError.Rejected> {
-            ep.imageInput(ImageInputRequest(resolution = 1280, qualityIndex = 0, maxBytes = 65536))
+            ep.imageInput(ImageInputRequest(resolution = 1280, maxBytes = 65536))
         }
     }
 

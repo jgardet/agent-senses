@@ -59,7 +59,7 @@ class PhoneEndpointTest {
         val ep = endpoint(PhoneEndpoint.PhoneConfig(grantedPermissions = emptySet()))
         ep.connect()
         assertFailsWith<SensesError.PermissionDenied> {
-            ep.imageInput(ImageInputRequest(resolution = 640, qualityIndex = 0, maxBytes = 65536))
+            ep.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536))
         }
     }
 
@@ -88,7 +88,7 @@ class PhoneEndpointTest {
         val ep = endpoint(PhoneEndpoint.PhoneConfig(hasCamera = false))
         ep.connect()
         assertFailsWith<SensesError.Unavailable> {
-            ep.imageInput(ImageInputRequest(resolution = 640, qualityIndex = 0, maxBytes = 65536))
+            ep.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536))
         }
     }
 

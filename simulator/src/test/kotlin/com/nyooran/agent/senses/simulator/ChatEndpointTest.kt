@@ -159,7 +159,7 @@ class ChatEndpointTest {
             imageFixture = byteArrayOf(1, 2, 3, 4),
         ))
         ep.connect()
-        val result = ep.imageInput(ImageInputRequest(resolution = 640, qualityIndex = 0, maxBytes = 65536))
+        val result = ep.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536))
         assertEquals(4, result.image.size)
         assertEquals(ResultOrigin.ATTACHMENT, result.provenance.origin)
     }
@@ -169,7 +169,7 @@ class ChatEndpointTest {
         val ep = endpoint(ChatEndpoint.ChatConfig(enableAttachments = false))
         ep.connect()
         assertFailsWith<SensesError.Unavailable> {
-            ep.imageInput(ImageInputRequest(resolution = 640, qualityIndex = 0, maxBytes = 65536))
+            ep.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536))
         }
     }
 

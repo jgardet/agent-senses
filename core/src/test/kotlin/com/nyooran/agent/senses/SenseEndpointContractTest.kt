@@ -196,7 +196,7 @@ abstract class SenseEndpointContractTest {
         try {
             var threw = false
             try {
-                endpoint.imageInput(ImageInputRequest(resolution = 640, qualityIndex = 0, maxBytes = 65536))
+                endpoint.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536))
             } catch (e: SensesError.Unavailable) {
                 threw = true
             } catch (e: UnsupportedOperationException) {

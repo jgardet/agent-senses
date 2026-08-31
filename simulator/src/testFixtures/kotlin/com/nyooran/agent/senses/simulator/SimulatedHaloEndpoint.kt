@@ -210,7 +210,7 @@ class SimulatedHaloEndpoint(
         return ImageInputResult(
             image = image,
             format = scenario.imageFormat,
-            isRaw = request.raw,
+            isRaw = request.deviceOptions["raw"] as? Boolean ?: false,
             provenance = Provenance(
                 operationId = opId,
                 endpointId = endpointId,

@@ -79,7 +79,7 @@ class ScenarioTest {
 
         assertFailsWith<SensesError.LimitExceeded> {
             device.captureImage(
-                ImageCaptureRequest(resolution = 128, qualityIndex = 4, maxBytes = 4_096)
+                ImageCaptureRequest(resolution = 128, maxBytes = 4_096)
             )
         }
     }
@@ -112,7 +112,7 @@ class ScenarioTest {
         val device = SimulatedSensesDevice(scope = this)
         device.connect()
 
-        device.present(com.nyooran.agent.senses.DevicePresentation(com.nyooran.agent.senses.PresentationFormat.HSD, "hello".toByteArray()))
+        device.present(com.nyooran.agent.senses.DevicePresentation(com.nyooran.agent.senses.PresentationFormat.DEVICE_NATIVE, "hello".toByteArray()))
         device.clearDisplay()
         device.playAudio(
             com.nyooran.agent.senses.AudioPlaybackRequest(

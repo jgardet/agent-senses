@@ -104,10 +104,9 @@ data class AudioCapture(
 
 data class ImageCaptureRequest(
     val resolution: Int,
-    val qualityIndex: Int,
-    val pan: Int = 0,
-    val raw: Boolean = false,
     val maxBytes: Int,
+    /** Device-specific capture parameters (e.g. pan, qualityIndex, raw for Halo). */
+    val deviceOptions: Map<String, Any> = emptyMap(),
 )
 
 data class ImageCapture(
@@ -129,9 +128,9 @@ data class AudioPlaybackRequest(
 )
 
 enum class PresentationFormat {
-    HSD,
-    HRP,
-    LUA,
+    /** Opaque device-specific presentation payload. */
+    DEVICE_NATIVE,
+    /** Clear the display. */
     CLEAR,
 }
 

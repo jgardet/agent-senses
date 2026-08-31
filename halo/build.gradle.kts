@@ -21,5 +21,5 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
-    testImplementation(project(":simulator"))
+    testImplementation(testFixtures(project(":simulator")))
 }

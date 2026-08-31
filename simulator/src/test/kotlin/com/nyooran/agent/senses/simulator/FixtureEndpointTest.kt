@@ -55,7 +55,7 @@ class FixtureEndpointTest {
             imageFixture = byteArrayOf(1, 2, 3),
         ))
         ep.connect()
-        val result = ep.imageInput(ImageInputRequest(resolution = 640, qualityIndex = 0, maxBytes = 65536))
+        val result = ep.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536))
         assertEquals(3, result.image.size)
     }
 

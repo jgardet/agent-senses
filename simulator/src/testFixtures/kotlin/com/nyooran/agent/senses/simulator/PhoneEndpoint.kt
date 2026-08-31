@@ -188,7 +188,7 @@ class PhoneEndpoint(
         return ImageInputResult(
             image = config.imageFixture,
             format = config.imageFormat,
-            isRaw = request.raw,
+            isRaw = request.deviceOptions["raw"] as? Boolean ?: false,
             provenance = Provenance(
                 operationId = opId,
                 endpointId = config.endpointId,

@@ -98,9 +98,11 @@ fun Route.senseCapabilityRoutes(
         val endpoint = resolveEndpoint(call, registry, SenseCapability.ImageInput, req.endpoint_id) ?: return@post
         val senseReq = ImageInputRequest(
             resolution = req.resolution,
-            qualityIndex = req.quality_index,
             maxBytes = req.max_bytes,
-            raw = req.raw,
+            deviceOptions = buildMap {
+                if (req.quality_index != 0) put("qualityIndex", req.quality_index)
+                if (req.raw) put("raw", true)
+            },
             timeoutMillis = req.timeout_millis,
         )
         val validationError = RequestValidator.validate(SenseCapability.ImageInput, senseReq, endpoint.profile)

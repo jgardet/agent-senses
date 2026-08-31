@@ -46,7 +46,7 @@ private class StubSensesDevice : SensesDevice {
     override suspend fun captureImage(request: ImageCaptureRequest) = ImageCapture(
         image = ByteArray(10),
         format = ImageFormat("jpeg", "image/jpeg", request.resolution, request.resolution),
-        isRaw = request.raw,
+        isRaw = request.deviceOptions["raw"] as? Boolean ?: false,
     )
 
     override suspend fun awaitInput(request: AwaitInputRequest): InputEvent {
@@ -79,7 +79,7 @@ class SensesContractTest {
         assertEquals(16000, audio.format.sampleRate)
         assertTrue(audio.audio.size <= 4_096)
 
-        val image = device.captureImage(ImageCaptureRequest(resolution = 256, qualityIndex = 4, maxBytes = 65_536))
+        val image = device.captureImage(ImageCaptureRequest(resolution = 256, maxBytes = 65_536))
         assertEquals(256, image.format.width)
         assertEquals("image/jpeg", image.format.mime)
         assertTrue(image.image.size <= 65_536)

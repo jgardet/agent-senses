@@ -170,7 +170,7 @@ class PhysicalHaloEndpoint(
     }
 
     override suspend fun imageInput(request: ImageInputRequest): ImageInputResult {
-        if (request.raw) {
+        if (request.deviceOptions["raw"] as? Boolean == true) {
             throw SensesError.Rejected("Halo camera does not support raw capture")
         }
         if (request.resolution != 640) {

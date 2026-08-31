@@ -37,7 +37,7 @@ data class VisualContent(
     val replaceCurrent: Boolean = true,
 ) {
     enum class VisualKind {
-        /** Opaque device-specific presentation (e.g. HSD for Halo). */
+        /** Opaque device-specific presentation payload. */
         DEVICE_NATIVE,
         /** Raw image bytes (JPEG, PNG, etc.). */
         IMAGE,
@@ -119,10 +119,8 @@ data class AudioOutputRequest(
 /** Request for [SenseCapability.ImageInput]. */
 data class ImageInputRequest(
     val resolution: Int,
-    val qualityIndex: Int,
-    val raw: Boolean = false,
     val maxBytes: Int,
-    /** Device-specific capture parameters (e.g. pan for Halo). */
+    /** Device-specific capture parameters (e.g. pan, qualityIndex, raw for Halo). */
     val deviceOptions: Map<String, Any> = emptyMap(),
     override val timeoutMillis: Long = 10_000,
 ) : SenseRequest

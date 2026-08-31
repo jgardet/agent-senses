@@ -150,7 +150,7 @@ class RequestValidatorTest {
         ))
         val failure = RequestValidator.validate(
             SenseCapability.ImageInput,
-            ImageInputRequest(resolution = 640, qualityIndex = 0, maxBytes = 1000),
+            ImageInputRequest(resolution = 640, maxBytes = 1000),
             p,
         )
         assertNotNull(failure)
@@ -162,7 +162,7 @@ class RequestValidatorTest {
         val p = profile()
         val failure = RequestValidator.validate(
             SenseCapability.ImageInput,
-            ImageInputRequest(resolution = 0, qualityIndex = 0, maxBytes = 1024),
+            ImageInputRequest(resolution = 0, maxBytes = 1024),
             p,
         )
         assertNotNull(failure)

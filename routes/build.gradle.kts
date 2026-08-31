@@ -27,5 +27,5 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     testImplementation("io.ktor:ktor-server-test-host:2.3.12")
     testImplementation("io.ktor:ktor-client-content-negotiation:2.3.12")
-    testImplementation(project(":simulator"))
+    testImplementation(testFixtures(project(":simulator")))
 }

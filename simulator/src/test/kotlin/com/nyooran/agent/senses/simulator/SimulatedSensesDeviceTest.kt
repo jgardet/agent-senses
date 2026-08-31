@@ -33,7 +33,7 @@ class SimulatedSensesDeviceTest {
         assertEquals(16000, audio.format.sampleRate)
         assertTrue(audio.audio.size <= 4_096)
 
-        val image = device.captureImage(ImageCaptureRequest(resolution = 256, qualityIndex = 4, maxBytes = 65_536))
+        val image = device.captureImage(ImageCaptureRequest(resolution = 256, maxBytes = 65_536))
         assertEquals(1, image.format.width)
         assertEquals(1, image.format.height)
         assertEquals("png", image.format.encoding)

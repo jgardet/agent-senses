@@ -140,7 +140,7 @@ class FixtureEndpoint(
         return ImageInputResult(
             image = config.imageFixture,
             format = config.imageFormat,
-            isRaw = request.raw,
+            isRaw = request.deviceOptions["raw"] as? Boolean ?: false,
             provenance = provenance(SenseCapability.ImageInput, ResultOrigin.CAMERA, nextOpId()).copy(
                 mediaFormat = MediaFormat(
                     encoding = config.imageFormat.encoding,
