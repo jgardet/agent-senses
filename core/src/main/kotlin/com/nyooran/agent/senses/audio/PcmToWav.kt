@@ -1,4 +1,4 @@
-package com.nyooran.agent.senses.android.audio
+package com.nyooran.agent.senses.audio
 
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer

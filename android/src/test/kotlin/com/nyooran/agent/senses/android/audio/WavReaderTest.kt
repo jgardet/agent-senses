@@ -1,5 +1,6 @@
 package com.nyooran.agent.senses.android.audio
 
+import com.nyooran.agent.senses.audio.PcmToWav
 import java.io.ByteArrayInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -64,6 +65,19 @@ class WavReaderTest {
         val wav = buildWav8(unsigned, sampleRate = 16000, channels = 1)
         val result = readAll(wav)
         assertEquals(unsigned.size * 2, result.size)
+    }
+
+    @Test
+    fun roundTripsPcmToWavToPcm() = runTest {
+        val pcm = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putShort(1000)
+            putShort(-1000)
+            putShort(5000)
+            putShort(-5000)
+        }.array()
+        val wav = PcmToWav.fromPcm16(pcm, sampleRate = 16000)
+        val result = readAll(wav)
+        assertContentEquals(pcm, result)
     }
 
     @Test

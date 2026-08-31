@@ -13,8 +13,8 @@ import android.speech.tts.UtteranceProgressListener
 import com.nyooran.agent.senses.AudioFormat
 import com.nyooran.agent.senses.AudioPlaybackRequest
 import com.nyooran.agent.senses.SensesError
-import com.nyooran.agent.senses.android.audio.PcmToWav
 import com.nyooran.agent.senses.android.audio.WavReader
+import com.nyooran.agent.senses.audio.PcmToWav
 import halo.engine.AndroidBleTransport
 import halo.engine.AndroidSpritePacker
 import halo.engine.BluetoothGattChannel

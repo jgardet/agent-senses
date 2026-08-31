@@ -1,10 +1,7 @@
-package com.nyooran.agent.senses.android.audio
+package com.nyooran.agent.senses.audio
 
-import java.io.ByteArrayInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlinx.coroutines.flow.toList
-import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -33,18 +30,5 @@ class PcmToWavTest {
         assertContentEquals(pcm, wav.copyOfRange(44, 48))
     }
 
-    @Test
-    fun roundTripWithWavReader() = runTest {
-        val pcm = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).apply {
-            putShort(1000)
-            putShort(-1000)
-            putShort(5000)
-            putShort(-5000)
-        }.array()
 
-        val wav = PcmToWav.fromPcm16(pcm, sampleRate = 16000)
-        val result = WavReader.readPcm(ByteArrayInputStream(wav), targetSampleRate = 16000).toList()
-            .fold(byteArrayOf()) { acc, chunk -> acc + chunk }
-        assertContentEquals(pcm, result)
-    }
 }

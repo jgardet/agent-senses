@@ -153,7 +153,7 @@ class SimulatedSensesDevice(
         val bytes = if (scenario.audioFixture.isNotEmpty()) {
             scenario.audioFixture
         } else {
-            generatePcm(request)
+            Fixtures.wavFromPcm(generatePcm(request), scenario.audioFormat.sampleRate, request.maxBytes)
         }
 
         if (bytes.size > request.maxBytes) {
@@ -162,7 +162,7 @@ class SimulatedSensesDevice(
             )
         }
 
-        val durationMs = estimateDurationMillis(bytes.size, scenario.audioFormat)
+        val durationMs = estimateDurationMillis(bytes, scenario.audioFormat)
         return AudioCapture(
             audio = bytes,
             format = scenario.audioFormat,
@@ -184,10 +184,16 @@ class SimulatedSensesDevice(
         currentCoroutineContext().ensureActive()
         ensureConnected()
 
-        val bytes = if (scenario.imageFixture.isNotEmpty()) {
-            scenario.imageFixture
+        val (bytes, format) = if (scenario.imageFixture.isNotEmpty()) {
+            scenario.imageFixture to scenario.imageFormat
         } else {
-            generateImageBytes(request)
+            val png = Fixtures.minimalPng()
+            png to ImageFormat(
+                encoding = "png",
+                mime = "image/png",
+                width = 1,
+                height = 1,
+            )
         }
 
         if (bytes.size > request.maxBytes) {
@@ -198,12 +204,7 @@ class SimulatedSensesDevice(
 
         return ImageCapture(
             image = bytes,
-            format = ImageFormat(
-                encoding = scenario.imageFormat.encoding,
-                mime = scenario.imageFormat.mime,
-                width = request.resolution,
-                height = request.resolution,
-            ),
+            format = format,
             isRaw = request.raw,
         )
     }
@@ -308,11 +309,19 @@ class SimulatedSensesDevice(
         return ByteArray(size) { (it % 256).toByte() }
     }
 
-    private fun estimateDurationMillis(byteCount: Int, format: AudioFormat): Long {
+    private fun estimateDurationMillis(bytes: ByteArray, format: AudioFormat): Long {
         val bytesPerSample = format.bitDepth / 8
         val bytesPerFrame = bytesPerSample * format.channels
         if (bytesPerFrame <= 0) return 0
-        return (byteCount / bytesPerFrame) * 1000L / format.sampleRate
+        val payloadSize = if (bytes.size >= 44 &&
+            bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" &&
+            bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WAVE"
+        ) {
+            bytes.size - 44
+        } else {
+            bytes.size
+        }
+        return (payloadSize / bytesPerFrame) * 1000L / format.sampleRate
     }
 }
 
