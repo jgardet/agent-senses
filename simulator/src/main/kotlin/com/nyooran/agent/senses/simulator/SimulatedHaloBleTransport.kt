@@ -39,6 +39,9 @@ class SimulatedHaloBleTransport(
     private val _messages = MutableSharedFlow<HaloMessage>(extraBufferCapacity = 128)
     override val messages = _messages.asSharedFlow()
 
+    private val _connectionEvents = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
+    override val connectionEvents = _connectionEvents.asSharedFlow()
+
     private val connected = AtomicBoolean(false)
     private val activeStream = AtomicReference<Job?>(null)
     private val packetCount = AtomicInteger(0)
@@ -56,16 +59,19 @@ class SimulatedHaloBleTransport(
 
     override suspend fun connect(name: String?) = lock.withLock {
         connected.set(false)
+        _connectionEvents.tryEmit(false)
         if (scenario.connectionDelayMillis > 0) {
             delay(scenario.connectionDelayMillis)
         }
         connected.set(true)
+        _connectionEvents.tryEmit(true)
         _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
         scheduleBatteryStatus()
     }
 
     override suspend fun disconnect() = lock.withLock {
         connected.set(false)
+        _connectionEvents.tryEmit(false)
         activeStream.getAndSet(null)?.cancel()
         transportScope.coroutineContext[Job]?.cancel()
         _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
@@ -109,6 +115,8 @@ class SimulatedHaloBleTransport(
 
     /** Cancel any pending scheduled events and release the transport scope. */
     fun close() {
+        connected.set(false)
+        _connectionEvents.tryEmit(false)
         activeStream.getAndSet(null)?.cancel()
         transportScope.cancel()
     }

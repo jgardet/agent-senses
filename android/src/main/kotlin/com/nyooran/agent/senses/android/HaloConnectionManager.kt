@@ -24,6 +24,7 @@ import halo.engine.HaloLimitException
 import halo.engine.HaloProtocol
 import halo.engine.HaloRuntimeInstaller
 import halo.engine.HaloSession
+import halo.engine.HaloTransportException
 import halo.engine.HsdHrpCompiler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -295,6 +296,8 @@ class HaloConnectionManager(
             )
             if (pcm.isEmpty()) throw SensesError.Protocol("Microphone capture returned no audio")
             PcmToWav.fromPcm16(pcm)
+        } catch (e: HaloTransportException) {
+            throw SensesError.Disconnected(e.message ?: "Halo disconnected during listen")
         } catch (e: HaloLimitException) {
             throw SensesError.LimitExceeded(e.message ?: "audio limit exceeded")
         } catch (e: TimeoutCancellationException) {
@@ -344,6 +347,8 @@ class HaloConnectionManager(
             )
             if (jpeg.isEmpty()) throw SensesError.Protocol("Camera capture returned no image")
             jpeg
+        } catch (e: HaloTransportException) {
+            throw SensesError.Disconnected(e.message ?: "Halo disconnected during photo capture")
         } catch (e: HaloLimitException) {
             throw SensesError.LimitExceeded(e.message ?: "photo limit exceeded")
         } catch (e: TimeoutCancellationException) {
@@ -369,6 +374,8 @@ class HaloConnectionManager(
             } else {
                 throw SensesError.Protocol("Battery payload too short: ${payload.size} bytes")
             }
+        } catch (e: HaloTransportException) {
+            throw SensesError.Disconnected(e.message ?: "Halo disconnected during battery query")
         } catch (e: TimeoutCancellationException) {
             throw SensesError.Timeout("battery query timed out")
         }
