@@ -24,8 +24,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -74,6 +76,9 @@ class SimulatedSensesDevice(
     private val _recordedAudio = mutableListOf<AudioPlaybackRequest>()
     private val _clears = AtomicInteger(0)
     private val _stops = AtomicInteger(0)
+    private val _playbackStarts = AtomicInteger(0)
+    private val _playbackStops = AtomicInteger(0)
+    private val _playbackCompletions = AtomicInteger(0)
 
     /** Presentations recorded by [present] and [clearDisplay]. */
     val recordedPresentations: List<DevicePresentation> get() = _recordedPresentations.toList()
@@ -87,7 +92,17 @@ class SimulatedSensesDevice(
     /** Number of stop/reset calls (disconnects). */
     val stopCount: Int get() = _stops.get()
 
+    /** Number of play-audio calls that started. */
+    val playbackStartCount: Int get() = _playbackStarts.get()
+
+    /** Number of play-audio calls that stopped (completed or cancelled). */
+    val playbackStopCount: Int get() = _playbackStops.get()
+
+    /** Number of play-audio calls that played through to the end. */
+    val playbackCompletionCount: Int get() = _playbackCompletions.get()
+
     override suspend fun connect(target: DeviceTarget?) = lock.withLock {
+        deviceScope.coroutineContext[Job]?.cancelChildren()
         connected.set(false)
         _state.value = DeviceState(
             isConnected = false,
@@ -130,7 +145,7 @@ class SimulatedSensesDevice(
         if (connected.getAndSet(false)) {
             _stops.incrementAndGet()
         }
-        deviceScope.cancel()
+        deviceScope.coroutineContext[Job]?.cancelChildren()
         _state.value = _state.value.copy(isConnected = false, isReady = false)
         _events.tryEmit(DisconnectedEvent)
         Unit
@@ -215,7 +230,7 @@ class SimulatedSensesDevice(
         currentCoroutineContext().ensureActive()
         val event = withTimeoutOrNull(request.timeoutMillis) {
             _events.first { event ->
-                event is TapEvent &&
+                event !is DisconnectedEvent &&
                     event.source in request.acceptedSources &&
                     event.gesture in request.acceptedGestures
             }
@@ -233,7 +248,28 @@ class SimulatedSensesDevice(
 
         if (request.volume !in 0..100) throw SensesError.Rejected("volume must be 0..100")
 
+        if (request.audio.size > MAX_PLAYBACK_BYTES) {
+            throw SensesError.LimitExceeded(
+                "playback audio of ${request.audio.size} bytes exceeds the $MAX_PLAYBACK_BYTES byte limit"
+            )
+        }
+
+        val durationMs = estimatePlaybackDurationMillis(request.audio, request.format)
+        if (durationMs > MAX_PLAYBACK_DURATION_MS) {
+            throw SensesError.LimitExceeded(
+                "playback duration of ${durationMs}ms exceeds the $MAX_PLAYBACK_DURATION_MS ms limit"
+            )
+        }
+
         _recordedAudio.add(request)
+        _playbackStarts.incrementAndGet()
+
+        try {
+            if (durationMs > 0) delay(durationMs)
+            _playbackCompletions.incrementAndGet()
+        } finally {
+            _playbackStops.incrementAndGet()
+        }
     }
 
     override suspend fun present(request: DevicePresentation) {
@@ -322,6 +358,26 @@ class SimulatedSensesDevice(
             bytes.size
         }
         return (payloadSize / bytesPerFrame) * 1000L / format.sampleRate
+    }
+
+    private fun estimatePlaybackDurationMillis(bytes: ByteArray, format: AudioFormat): Long {
+        val bytesPerSample = format.bitDepth / 8
+        val bytesPerFrame = bytesPerSample * format.channels
+        if (bytesPerFrame <= 0) return 0
+        val payloadSize = if (bytes.size >= 44 &&
+            bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" &&
+            bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WAVE"
+        ) {
+            bytes.size - 44
+        } else {
+            bytes.size
+        }
+        return (payloadSize / bytesPerFrame) * 1000L / format.sampleRate
+    }
+
+    companion object {
+        const val MAX_PLAYBACK_BYTES = 2_000_000
+        const val MAX_PLAYBACK_DURATION_MS = 60_000L
     }
 }
 
