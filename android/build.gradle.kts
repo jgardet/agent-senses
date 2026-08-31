@@ -32,6 +32,12 @@ dependencies {
     implementation("halo.engine:kotlin")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+
+    // L5-03: The :simulator module must NEVER be an implementation
+    // dependency of this module. It is only available as testImplementation
+    // to prevent accidental leakage into production classpaths.
+    // The runtime ReleaseSafetyCheck provides a second layer of defense.
+    testImplementation(project(":simulator"))
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
 }
