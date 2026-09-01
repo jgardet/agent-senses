@@ -285,3 +285,17 @@ data class StatusInputResult(
     val status: EndpointStatus,
     override val provenance: Provenance,
 ) : SenseResult
+
+/**
+ * Returns a stable, human-readable name for [SenseCapability].
+ */
+fun SenseCapability.name(): String = when (this) {
+    SenseCapability.AudioInput -> "AudioInput"
+    SenseCapability.AudioOutput -> "AudioOutput"
+    SenseCapability.ImageInput -> "ImageInput"
+    SenseCapability.VisualOutput -> "VisualOutput"
+    SenseCapability.TextOutput -> "TextOutput"
+    SenseCapability.TextInput -> "TextInput"
+    SenseCapability.InteractionInput -> "InteractionInput"
+    SenseCapability.StatusInput -> "StatusInput"
+}

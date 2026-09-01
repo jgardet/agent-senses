@@ -489,14 +489,3 @@ private fun parseInteractionType(s: String): InteractionType? = when (s.uppercas
     "TEXT_ENTRY" -> InteractionType.TEXT_ENTRY
     else -> null
 }
-
-private fun SenseCapability.name(): String = when (this) {
-    SenseCapability.AudioInput -> "AudioInput"
-    SenseCapability.AudioOutput -> "AudioOutput"
-    SenseCapability.ImageInput -> "ImageInput"
-    SenseCapability.VisualOutput -> "VisualOutput"
-    SenseCapability.TextOutput -> "TextOutput"
-    SenseCapability.TextInput -> "TextInput"
-    SenseCapability.InteractionInput -> "InteractionInput"
-    SenseCapability.StatusInput -> "StatusInput"
-}

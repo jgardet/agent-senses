@@ -113,7 +113,7 @@ class ChatEndpointTest {
 
     @Test
     fun textInputProvenanceIsKeyboard() = runTest {
-        val ep = endpoint()
+        val ep = endpoint(ChatEndpoint.ChatConfig(pendingTextInput = "hello"))
         ep.connect()
         val result = ep.textInput(TextInputRequest())
         assertEquals(ResultOrigin.KEYBOARD, result.provenance.origin)
@@ -134,7 +134,7 @@ class ChatEndpointTest {
 
     @Test
     fun interactionInputDefaultsToApproval() = runTest {
-        val ep = endpoint()
+        val ep = endpoint(ChatEndpoint.ChatConfig(pendingInteraction = InteractionEvent.Approval(approved = true)))
         ep.connect()
         val result = ep.interactionInput(InteractionInputRequest())
         assertTrue(result.event is InteractionEvent.Approval)

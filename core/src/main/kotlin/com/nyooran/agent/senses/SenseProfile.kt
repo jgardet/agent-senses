@@ -20,8 +20,11 @@ package com.nyooran.agent.senses
 /**
  * Stable identifier for a sense endpoint within a session.
  *
- * Assigned by the registry when an endpoint is bound. Stable across
- * reconnections of the same physical device; not reused after unbind.
+ * The [SenseEndpointRegistry] accepts an endpoint with an endpoint-provided
+ * ID. The application is responsible for assigning stable, non-reusable IDs
+ * per physical or logical device. The registry treats the ID as an identity
+ * key and does not silently reuse it after unbind; re-binding with the same
+ * ID creates a fresh endpoint instance and cancels any previous one.
  */
 @JvmInline
 value class EndpointId(val value: String)

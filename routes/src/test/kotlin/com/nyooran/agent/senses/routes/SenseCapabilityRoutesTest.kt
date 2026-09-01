@@ -2,7 +2,6 @@ package com.nyooran.agent.senses.routes
 
 import com.nyooran.agent.senses.*
 import com.nyooran.agent.senses.simulator.SimulatedHaloEndpoint
-import com.nyooran.agent.senses.simulator.ChatEndpoint
 import io.ktor.client.call.*
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.client.request.*

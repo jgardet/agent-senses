@@ -209,7 +209,10 @@ class SenseIntegrationTest {
     fun e2eProvenanceDistinguishesEndpoints() = testApplication {
         setupServer(
             SimulatedHaloEndpoint(endpointId = EndpointId("halo-1")),
-            ChatEndpoint(ChatEndpoint.ChatConfig(endpointId = EndpointId("chat-1"))),
+            ChatEndpoint(ChatEndpoint.ChatConfig(
+                endpointId = EndpointId("chat-1"),
+                pendingInteraction = InteractionEvent.Approval(approved = true),
+            )),
         )
         // Listen from halo
         val haloResp = jsonClient().post("/v1/sense/listen") {

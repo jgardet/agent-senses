@@ -2,6 +2,7 @@ package com.nyooran.agent.senses
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -69,6 +71,10 @@ class SenseEndpointRegistry {
     /** Active operations per endpoint, keyed by operation ID. */
     private val activeOperations = ConcurrentHashMap<EndpointId, MutableMap<String, Job>>()
 
+    /** Observable active operations. */
+    private val _operations = MutableStateFlow<Map<EndpointId, Set<String>>>(emptyMap())
+    val operations: StateFlow<Map<EndpointId, Set<String>>> = _operations.asStateFlow()
+
     /** Grace period for active operations to complete before forced cancellation. */
     var cancellationGracePeriodMillis: Long = 1000L
 
@@ -106,34 +112,42 @@ class SenseEndpointRegistry {
 
     /**
      * Unbind all endpoints.
+     *
+     * Runs disconnect cleanup in [NonCancellable] context so a cancelled
+     * caller cannot interrupt endpoint teardown.
      */
-    suspend fun unbindAll() = bindMutex.withLock {
-        for ((id, endpoint) in endpoints.entries) {
-            runCatching { awaitCancellationAndDisconnect(id, endpoint) }
+    suspend fun unbindAll() = withContext(NonCancellable) {
+        bindMutex.withLock {
+            for ((id, endpoint) in endpoints.entries) {
+                runCatching { awaitCancellationAndDisconnect(id, endpoint) }
+            }
+            endpoints.clear()
+            refreshProfiles()
         }
-        endpoints.clear()
-        refreshProfiles()
     }
 
     /**
      * Cancel active operations on [endpointId], wait for them to complete
      * (up to [cancellationGracePeriodMillis]), then disconnect the endpoint.
+     *
+     * Disconnect runs in [NonCancellable] context so that endpoint cleanup
+     * completes even when the caller has been cancelled.
      */
     private suspend fun awaitCancellationAndDisconnect(endpointId: EndpointId, endpoint: SenseEndpoint) {
         val ops = activeOperations.remove(endpointId)
         if (ops != null && ops.isNotEmpty()) {
-            // Cancel all active operations
             for (job in ops.values) {
                 job.cancel()
             }
-            // Wait for them to complete within the grace period
             withTimeoutOrNull(cancellationGracePeriodMillis) {
                 for (job in ops.values) {
                     job.join()
                 }
             }
         }
-        runCatching { endpoint.disconnect() }
+        withContext(NonCancellable) {
+            runCatching { endpoint.disconnect() }
+        }
     }
 
     /**
@@ -163,6 +177,7 @@ class SenseEndpointRegistry {
      */
     fun registerOperation(endpointId: EndpointId, operationId: String, job: Job) {
         activeOperations.getOrPut(endpointId) { ConcurrentHashMap() }[operationId] = job
+        refreshOperations()
     }
 
     /**
@@ -170,6 +185,11 @@ class SenseEndpointRegistry {
      */
     fun completeOperation(endpointId: EndpointId, operationId: String) {
         activeOperations[endpointId]?.remove(operationId)
+        refreshOperations()
+    }
+
+    private fun refreshOperations() {
+        _operations.value = activeOperations.mapValues { it.value.keys.toSet() }
     }
 
     /**
