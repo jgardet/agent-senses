@@ -81,8 +81,9 @@ class CapabilityCoordinator {
 
     /**
      * Execute [block] for a combined operation using multiple capabilities
-     * on the same endpoint. All required domain locks are acquired before
-     * any block executes, in a deterministic order to prevent deadlock.
+     * on the same endpoint. All required domain locks and concurrency permits
+     * are acquired before the block executes, in a deterministic order to
+     * prevent deadlock.
      */
     suspend fun <T> withCombinedCapabilities(
         endpoint: SenseEndpoint,
@@ -93,11 +94,20 @@ class CapabilityCoordinator {
         val endpointId = profile.endpointId
         val domains = capabilities.mapNotNull { profile.concurrency.resourceDomains[it] }.toSet().sorted()
 
-        if (domains.isEmpty()) return block()
+        if (domains.isEmpty() && capabilities.all { getConcurrencySemaphore(endpointId, it, profile) == null }) {
+            return block()
+        }
 
         // Acquire all domain locks in sorted order to prevent deadlock
         val locks = domains.map { getDomainLock(endpointId, it) }
-        return acquireAll(locks) { block() }
+        // Acquire one permit per limited capability, ordered by capability name
+        val permits = capabilities
+            .mapNotNull { cap -> getConcurrencySemaphore(endpointId, cap, profile)?.let { cap to it } }
+            .sortedBy { (cap, _) -> cap.toString() }
+
+        return acquireAll(locks) {
+            withAllPermits(permits) { block() }
+        }
     }
 
     private fun getDomainLock(endpointId: EndpointId, domain: String): Mutex {
@@ -121,6 +131,15 @@ class CapabilityCoordinator {
         if (locks.isEmpty()) return block()
         return locks[0].withLock {
             acquireAll(locks.drop(1), block)
+        }
+    }
+
+    /** Recursively acquire all semaphores in order, then execute block. */
+    private suspend fun <T> withAllPermits(permits: List<Pair<SenseCapability, Semaphore>>, block: suspend () -> T): T {
+        if (permits.isEmpty()) return block()
+        val (_, semaphore) = permits[0]
+        return semaphore.withPermit {
+            withAllPermits(permits.drop(1), block)
         }
     }
 

@@ -1,6 +1,7 @@
 package com.nyooran.agent.senses.simulator
 
 import com.nyooran.agent.senses.*
+import com.nyooran.agent.senses.orchestration.SemanticSenseWorkflows
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals

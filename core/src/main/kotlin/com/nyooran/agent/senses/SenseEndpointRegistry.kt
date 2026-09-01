@@ -65,6 +65,9 @@ class SenseEndpointRegistry {
     private val _endpointProfiles = MutableStateFlow<List<SenseProfile>>(emptyList())
     val endpointProfiles: StateFlow<List<SenseProfile>> = _endpointProfiles.asStateFlow()
 
+    /** Coordinates concurrent operations across endpoints using profile rules. */
+    val coordinator = CapabilityCoordinator()
+
     private val operationCounter = AtomicLong(0)
     private val bindMutex = Mutex()
 
@@ -148,6 +151,7 @@ class SenseEndpointRegistry {
         withContext(NonCancellable) {
             runCatching { endpoint.disconnect() }
         }
+        coordinator.clearEndpoint(endpointId)
     }
 
     /**
