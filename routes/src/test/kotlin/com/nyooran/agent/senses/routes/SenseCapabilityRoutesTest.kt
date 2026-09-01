@@ -1,6 +1,7 @@
 package com.nyooran.agent.senses.routes
 
 import com.nyooran.agent.senses.*
+import com.nyooran.agent.senses.orchestration.SemanticSenseWorkflows
 import com.nyooran.agent.senses.simulator.SimulatedHaloEndpoint
 import io.ktor.client.call.*
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
@@ -22,11 +23,31 @@ class SenseCapabilityRoutesTest {
     private val authToken = "test-token"
     private val json = Json { ignoreUnknownKeys = true }
 
+    private class MockTranscriptionModel(
+        private val transcript: String = "hello world",
+    ) : TranscriptionModel {
+        override suspend fun transcribe(audio: ByteArray, format: AudioFormat) =
+            TranscriptionResult(transcript = transcript, confidence = 0.95f)
+    }
+
+    private class MockVisionModel(
+        private val description: String = "a person walking",
+        private val objects: List<String> = listOf("person", "sidewalk"),
+    ) : VisionModel {
+        override suspend fun observe(image: ByteArray, format: ImageFormat, prompt: String?) =
+            VisionResult(description = description, confidence = 0.88f, objects = objects)
+    }
+
     private fun ApplicationTestBuilder.setupServer(): SenseEndpointRegistry {
         val registry = SenseEndpointRegistry()
+        val workflows = SemanticSenseWorkflows(
+            registry = registry,
+            transcriptionModel = MockTranscriptionModel(),
+            visionModel = MockVisionModel(),
+        )
         application {
             install(ContentNegotiation) { json(json) }
-            routing { senseCapabilityRoutes(registry, authToken) }
+            routing { senseCapabilityRoutes(registry, authToken, workflows) }
         }
         return registry
     }
@@ -67,15 +88,16 @@ class SenseCapabilityRoutesTest {
     // ------------------------------------------------------------------ listen
 
     @Test
-    fun listenReturnsAudioWithProvenance() = testApplication {
+    fun listenReturnsTranscriptWithProvenance() = testApplication {
         val registry = setupServer()
         kotlinx.coroutines.runBlocking { registry.bind(SimulatedHaloEndpoint()) }
         val response = jsonClient().post("/v1/sense/listen") {
             auth()
-            setBody("""{"max_duration_millis": 5000, "max_bytes": 65536}""")
+            setBody("""{"max_duration_millis": 5000, "max_bytes": 65536, "raw": true}""")
         }
         assertEquals(HttpStatusCode.OK, response.status)
         val body = response.body<ListenResponse>()
+        assertEquals("hello world", body.transcript)
         assertNotNull(body.audio_base64)
         assertEquals("SIMULATOR", body.provenance.backend_kind)
         assertEquals("AudioInput", body.provenance.capability)
@@ -105,7 +127,7 @@ class SenseCapabilityRoutesTest {
     // ------------------------------------------------------------------ look
 
     @Test
-    fun lookReturnsImageWithProvenance() = testApplication {
+    fun lookReturnsDescriptionWithProvenance() = testApplication {
         val registry = setupServer()
         kotlinx.coroutines.runBlocking { registry.bind(SimulatedHaloEndpoint()) }
         val response = jsonClient().post("/v1/sense/look") {
@@ -114,6 +136,7 @@ class SenseCapabilityRoutesTest {
         }
         assertEquals(HttpStatusCode.OK, response.status)
         val body = response.body<LookResponse>()
+        assertEquals("a person walking", body.description)
         assertEquals("SIMULATOR", body.provenance.backend_kind)
         assertEquals("ImageInput", body.provenance.capability)
     }

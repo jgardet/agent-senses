@@ -54,6 +54,10 @@ fun Route.senseCapabilityRoutes(
 
     post("/v1/sense/listen") {
         if (!checkAuth(call, authToken)) return@post
+        if (workflows == null) {
+            respondError(call, SensesError.Unavailable("semantic workflows not configured"))
+            return@post
+        }
         val req = safeReceive<ListenRequest>(call, json) ?: return@post
         val endpoint = resolveEndpoint(call, registry, SenseCapability.AudioInput, req.endpoint_id) ?: return@post
         val senseReq = AudioInputRequest(
@@ -70,23 +74,25 @@ fun Route.senseCapabilityRoutes(
             return@post
         }
         try {
-            val result = endpoint.audioInput(senseReq)
-            call.respond(ListenResponse(
-                audio_base64 = Base64.getEncoder().encodeToString(result.audio),
-                format = AudioFormatDto(
-                    sample_rate = result.format.sampleRate,
-                    bits_per_sample = result.format.bitDepth,
-                    channels = result.format.channels,
-                    encoding = result.format.encoding,
-                    mime = result.format.mime,
-                ),
-                duration_millis = result.durationMillis,
-                provenance = result.provenance.toDto(),
-            ))
+            val result = workflows.listenAndTranscribe(
+                endpointId = endpoint.profile.endpointId,
+                request = senseReq,
+                keepRaw = req.raw,
+            )
+            result.fold(
+                onSuccess = { r ->
+                    call.respond(r.toListenResponse(req.raw))
+                },
+                onFailure = { e ->
+                    when (e) {
+                        is SensesError -> respondError(call, e)
+                        is CancellationException -> throw e
+                        else -> respondError(call, SensesError.Internal(e.message ?: "listen failed"))
+                    }
+                },
+            )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: SensesError) {
-            respondError(call, e)
         } catch (e: Exception) {
             respondError(call, SensesError.Internal(e.message ?: "listen failed"))
         }
@@ -96,6 +102,10 @@ fun Route.senseCapabilityRoutes(
 
     post("/v1/sense/look") {
         if (!checkAuth(call, authToken)) return@post
+        if (workflows == null) {
+            respondError(call, SensesError.Unavailable("semantic workflows not configured"))
+            return@post
+        }
         val req = safeReceive<LookRequest>(call, json) ?: return@post
         val endpoint = resolveEndpoint(call, registry, SenseCapability.ImageInput, req.endpoint_id) ?: return@post
         val senseReq = ImageInputRequest(
@@ -113,22 +123,26 @@ fun Route.senseCapabilityRoutes(
             return@post
         }
         try {
-            val result = endpoint.imageInput(senseReq)
-            call.respond(LookResponse(
-                image_base64 = Base64.getEncoder().encodeToString(result.image),
-                format = ImageFormatDto(
-                    encoding = result.format.encoding,
-                    mime = result.format.mime,
-                    width = result.format.width,
-                    height = result.format.height,
-                ),
-                is_raw = result.isRaw,
-                provenance = result.provenance.toDto(),
-            ))
+            val result = workflows.lookAndObserve(
+                endpointId = endpoint.profile.endpointId,
+                request = senseReq,
+                prompt = req.prompt,
+                keepRaw = req.raw,
+            )
+            result.fold(
+                onSuccess = { r ->
+                    call.respond(r.toLookResponse(req.raw))
+                },
+                onFailure = { e ->
+                    when (e) {
+                        is SensesError -> respondError(call, e)
+                        is CancellationException -> throw e
+                        else -> respondError(call, SensesError.Internal(e.message ?: "look failed"))
+                    }
+                },
+            )
         } catch (e: CancellationException) {
             throw e
-        } catch (e: SensesError) {
-            respondError(call, e)
         } catch (e: Exception) {
             respondError(call, SensesError.Internal(e.message ?: "look failed"))
         }
@@ -476,6 +490,64 @@ private fun Provenance.toDto() = ProvenanceDto(
     started_at = startedAt,
     completed_at = completedAt,
 )
+
+private fun SemanticListenResult.toListenResponse(raw: Boolean): ListenResponse {
+    val fmt = rawAudioFormat
+    return ListenResponse(
+        transcript = transcript,
+        confidence = confidence,
+        language = language,
+        audio_base64 = if (raw && rawAudio != null) Base64.getEncoder().encodeToString(rawAudio) else null,
+        format = fmt?.let {
+            AudioFormatDto(
+                sample_rate = it.sampleRate,
+                bits_per_sample = it.bitDepth,
+                channels = it.channels,
+                encoding = it.encoding,
+                mime = it.mime,
+            )
+        } ?: rawAudioProvenance.mediaFormat?.let {
+            AudioFormatDto(
+                sample_rate = it.sampleRate ?: 0,
+                bits_per_sample = 0,
+                channels = it.channels ?: 0,
+                encoding = it.encoding,
+                mime = it.mime,
+            )
+        },
+        duration_millis = rawAudioProvenance.mediaFormat?.durationMillis,
+        provenance = rawAudioProvenance.toDto(),
+        transcription_provenance = transcriptionProvenance.toDto(),
+    )
+}
+
+private fun SemanticLookResult.toLookResponse(raw: Boolean): LookResponse {
+    val fmt = rawImageFormat
+    return LookResponse(
+        description = description,
+        confidence = confidence,
+        objects = objects,
+        image_base64 = if (raw && rawImage != null) Base64.getEncoder().encodeToString(rawImage) else null,
+        format = fmt?.let {
+            ImageFormatDto(
+                encoding = it.encoding,
+                mime = it.mime,
+                width = it.width,
+                height = it.height,
+            )
+        } ?: rawImageProvenance.mediaFormat?.let {
+            ImageFormatDto(
+                encoding = it.encoding,
+                mime = it.mime,
+                width = it.width ?: 0,
+                height = it.height ?: 0,
+            )
+        },
+        is_raw = isRaw,
+        provenance = rawImageProvenance.toDto(),
+        observation_provenance = observationProvenance.toDto(),
+    )
+}
 
 private fun parseInteractionType(s: String): InteractionType? = when (s.uppercase()) {
     "TAP_SINGLE" -> InteractionType.TAP_SINGLE

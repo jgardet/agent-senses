@@ -37,15 +37,20 @@ data class ListenRequest(
     val aec: Boolean = true,
     val voice: Boolean = true,
     val max_bytes: Int = 65536,
+    val raw: Boolean = false,
     val timeout_millis: Long = 0,
 )
 
 @Serializable
 data class ListenResponse(
-    val audio_base64: String,
-    val format: AudioFormatDto,
-    val duration_millis: Long,
+    val transcript: String,
+    val confidence: Float,
+    val language: String? = null,
+    val audio_base64: String? = null,
+    val format: AudioFormatDto? = null,
+    val duration_millis: Long? = null,
     val provenance: ProvenanceDto,
+    val transcription_provenance: ProvenanceDto? = null,
 )
 
 // ------------------------------------------------------------------ look
@@ -57,15 +62,20 @@ data class LookRequest(
     val quality_index: Int = 0,
     val max_bytes: Int = 65536,
     val raw: Boolean = false,
+    val prompt: String? = null,
     val timeout_millis: Long = 30000,
 )
 
 @Serializable
 data class LookResponse(
-    val image_base64: String,
-    val format: ImageFormatDto,
-    val is_raw: Boolean,
+    val description: String,
+    val confidence: Float,
+    val objects: List<String>? = null,
+    val image_base64: String? = null,
+    val format: ImageFormatDto? = null,
+    val is_raw: Boolean? = null,
     val provenance: ProvenanceDto,
+    val observation_provenance: ProvenanceDto? = null,
 )
 
 // ------------------------------------------------------------------ wait

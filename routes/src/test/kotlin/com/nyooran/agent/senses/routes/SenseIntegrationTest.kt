@@ -1,6 +1,7 @@
 package com.nyooran.agent.senses.routes
 
 import com.nyooran.agent.senses.*
+import com.nyooran.agent.senses.orchestration.SemanticSenseWorkflows
 import com.nyooran.agent.senses.simulator.*
 import io.ktor.client.call.*
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
@@ -35,11 +36,31 @@ class SenseIntegrationTest {
     private val authToken = "test-token"
     private val json = Json { ignoreUnknownKeys = true }
 
+    private class MockTranscriptionModel(
+        private val transcript: String = "hello world",
+    ) : TranscriptionModel {
+        override suspend fun transcribe(audio: ByteArray, format: AudioFormat) =
+            TranscriptionResult(transcript = transcript, confidence = 0.95f)
+    }
+
+    private class MockVisionModel(
+        private val description: String = "a person walking",
+        private val objects: List<String> = listOf("person", "sidewalk"),
+    ) : VisionModel {
+        override suspend fun observe(image: ByteArray, format: ImageFormat, prompt: String?) =
+            VisionResult(description = description, confidence = 0.88f, objects = objects)
+    }
+
     private fun ApplicationTestBuilder.setupServer(vararg endpoints: SenseEndpoint): SenseEndpointRegistry {
         val registry = SenseEndpointRegistry()
+        val workflows = SemanticSenseWorkflows(
+            registry = registry,
+            transcriptionModel = MockTranscriptionModel(),
+            visionModel = MockVisionModel(),
+        )
         application {
             install(ContentNegotiation) { json(json) }
-            routing { senseCapabilityRoutes(registry, authToken) }
+            routing { senseCapabilityRoutes(registry, authToken, workflows) }
         }
         runBlocking { endpoints.forEach { registry.bind(it) } }
         return registry

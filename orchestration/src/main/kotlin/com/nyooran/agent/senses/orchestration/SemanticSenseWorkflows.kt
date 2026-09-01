@@ -1,6 +1,7 @@
 package com.nyooran.agent.senses.orchestration
 
 import com.nyooran.agent.senses.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 
@@ -39,16 +40,13 @@ class SemanticSenseWorkflows(
      */
     suspend fun listenAndTranscribe(
         endpointId: EndpointId? = null,
-        maxDurationMillis: Long = 5000,
+        request: AudioInputRequest = AudioInputRequest(maxDurationMillis = 5_000, maxBytes = 65_536),
         keepRaw: Boolean = false,
-    ): Result<SemanticListenResult> = runCatching {
+    ): Result<SemanticListenResult> = cancellationAware {
         val model = transcriptionModel
             ?: throw SensesError.ModelUnavailable("transcription model not configured")
         val endpoint = resolve(endpointId, SenseCapability.AudioInput)
-        val audioResult = endpoint.audioInput(AudioInputRequest(
-            maxDurationMillis = maxDurationMillis,
-            maxBytes = 65536,
-        ))
+        val audioResult = endpoint.audioInput(request)
         val transcription = model.transcribe(audioResult.audio, audioResult.format)
         val transcriptionProvenance = Provenance(
             operationId = "transcribe-${audioResult.provenance.operationId}",
@@ -64,9 +62,11 @@ class SemanticSenseWorkflows(
         SemanticListenResult(
             transcript = transcription.transcript,
             confidence = transcription.confidence,
+            language = transcription.language,
             rawAudioProvenance = audioResult.provenance,
             transcriptionProvenance = transcriptionProvenance,
             rawAudio = if (keepRaw) audioResult.audio else null,
+            rawAudioFormat = audioResult.format,
         )
     }
 
@@ -76,16 +76,14 @@ class SemanticSenseWorkflows(
      */
     suspend fun lookAndObserve(
         endpointId: EndpointId? = null,
+        request: ImageInputRequest = ImageInputRequest(resolution = 640, maxBytes = 65_536),
         prompt: String? = null,
         keepRaw: Boolean = false,
-    ): Result<SemanticLookResult> = runCatching {
+    ): Result<SemanticLookResult> = cancellationAware {
         val model = visionModel
             ?: throw SensesError.ModelUnavailable("vision model not configured")
         val endpoint = resolve(endpointId, SenseCapability.ImageInput)
-        val imageResult = endpoint.imageInput(ImageInputRequest(
-            resolution = 640,
-            maxBytes = 65536,
-        ))
+        val imageResult = endpoint.imageInput(request)
         val observation = model.observe(imageResult.image, imageResult.format, prompt)
         val observationProvenance = Provenance(
             operationId = "observe-${imageResult.provenance.operationId}",
@@ -102,9 +100,11 @@ class SemanticSenseWorkflows(
             description = observation.description,
             confidence = observation.confidence,
             objects = observation.objects,
+            isRaw = imageResult.isRaw,
             rawImageProvenance = imageResult.provenance,
             observationProvenance = observationProvenance,
             rawImage = if (keepRaw) imageResult.image else null,
+            rawImageFormat = imageResult.format,
         )
     }
 
@@ -119,7 +119,7 @@ class SemanticSenseWorkflows(
     suspend fun speakText(
         text: String,
         endpointId: EndpointId? = null,
-    ): Result<SemanticSpeakResult> = runCatching {
+    ): Result<SemanticSpeakResult> = cancellationAware {
         val model = ttsModel
             ?: throw SensesError.ModelUnavailable("TTS model not configured")
         val ttsResult = model.synthesize(text)
@@ -152,7 +152,7 @@ class SemanticSenseWorkflows(
     suspend fun presentSemantic(
         content: VisualContent,
         endpointId: EndpointId? = null,
-    ): Result<SemanticPresentResult> = runCatching {
+    ): Result<SemanticPresentResult> = cancellationAware {
         val endpoint = resolve(endpointId, SenseCapability.VisualOutput)
         val result = endpoint.visualOutput(VisualOutputRequest(content = content))
         SemanticPresentResult(outputProvenance = result.provenance)
@@ -167,8 +167,8 @@ class SemanticSenseWorkflows(
         visionPrompt: String? = null,
         keepRaw: Boolean = false,
     ): MultiModalResult = coroutineScope {
-        val listenDeferred = async { listenAndTranscribe(endpointId, keepRaw = keepRaw) }
-        val lookDeferred = async { lookAndObserve(endpointId, visionPrompt, keepRaw) }
+        val listenDeferred = async { listenAndTranscribe(endpointId = endpointId, keepRaw = keepRaw) }
+        val lookDeferred = async { lookAndObserve(endpointId = endpointId, prompt = visionPrompt, keepRaw = keepRaw) }
         val listen = listenDeferred.await()
         val look = lookDeferred.await()
         MultiModalResult(
@@ -191,6 +191,18 @@ class SemanticSenseWorkflows(
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Run [block] and wrap non-cancellation failures in a [Result].
+     * Coroutine cancellation is always rethrown so callers can cancel cleanly.
+     */
+    private inline fun <T> cancellationAware(block: () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
 
     private fun resolve(endpointId: EndpointId?, capability: SenseCapability): SenseEndpoint {
         if (endpointId != null) {

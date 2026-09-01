@@ -70,10 +70,12 @@ data class TtsResult(
 data class SemanticListenResult(
     val transcript: String,
     val confidence: Float,
+    val language: String? = null,
     val rawAudioProvenance: Provenance,
     val transcriptionProvenance: Provenance,
     /** Raw audio is ephemeral by default; only included if keepRaw is true. */
     val rawAudio: ByteArray? = null,
+    val rawAudioFormat: AudioFormat? = null,
 )
 
 /**
@@ -84,10 +86,12 @@ data class SemanticLookResult(
     val description: String,
     val confidence: Float,
     val objects: List<String>,
+    val isRaw: Boolean = false,
     val rawImageProvenance: Provenance,
     val observationProvenance: Provenance,
     /** Raw image is ephemeral by default; only included if keepRaw is true. */
     val rawImage: ByteArray? = null,
+    val rawImageFormat: ImageFormat? = null,
 )
 
 /**
