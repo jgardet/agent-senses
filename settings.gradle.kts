@@ -17,7 +17,6 @@ dependencyResolutionManagement {
 rootProject.name = "agent-senses"
 include(":core")
 include(":halo")
-include(":android")
 include(":simulator")
 include(":routes")
 include(":orchestration")

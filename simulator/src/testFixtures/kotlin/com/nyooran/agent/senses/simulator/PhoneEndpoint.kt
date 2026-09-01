@@ -1,6 +1,7 @@
 package com.nyooran.agent.senses.simulator
 
 import com.nyooran.agent.senses.*
+import com.nyooran.agent.senses.audio.PcmToWav
 import kotlinx.coroutines.delay
 
 /**
@@ -11,8 +12,8 @@ import kotlinx.coroutines.delay
  * to Android APIs (AudioRecord, CameraX, AudioTrack, TextToSpeech, etc.).
  *
  * In the simulator/JVM module, this class provides a deterministic stub
- * that can be used for orchestration tests. The real Android implementation
- * lives in the `:android` module and wraps these same methods with
+ * that can be used for orchestration and route tests. The real Android
+ * implementation lives in the app and wraps these same methods with
  * permission-aware hardware calls.
  *
  * Key properties:
@@ -21,6 +22,7 @@ import kotlinx.coroutines.delay
  * - TTS: deterministic init, utterance tracking, cancellation, cleanup.
  * - Battery: labeled as phone state, not Halo state.
  * - Does NOT advertise Halo-specific capabilities (HRP display, wearable tap).
+ * - Microphone PCM is wrapped as 16 kHz mono 16-bit WAV before returning.
  *
  * Acceptance: Without glasses, a real voice/image request can produce
  * audible and visible output through phone hardware.
@@ -38,9 +40,8 @@ class PhoneEndpoint(
         val hasScreen: Boolean = true,
         val hasBattery: Boolean = true,
         val hasKeyboard: Boolean = true,
-        val audioFixture: ByteArray = ByteArray(160),
+        val audioFixture: ByteArray = ByteArray(320) { 0 },  // 10ms 16kHz mono 16-bit PCM
         val audioFormat: AudioFormat = AudioFormat(16000, 16, 1, "wav", "audio/wav"),
-        val audioDurationMillis: Long = 100,
         val imageFixture: ByteArray = ByteArray(0),
         val imageFormat: ImageFormat = ImageFormat("jpeg", "image/jpeg", 640, 640),
         val batteryLevel: Int = 75,
@@ -49,7 +50,12 @@ class PhoneEndpoint(
         val connectionDelayMillis: Long = 0,
         /** Simulated permission grants. */
         val grantedPermissions: Set<String> = setOf("RECORD_AUDIO", "CAMERA"),
-    )
+    ) {
+        companion object {
+            // Safety cap to keep simulated audio collection bounded.
+            const val MAX_AUDIO_BYTES: Int = 1_048_576
+        }
+    }
 
     private var connected = false
     private var operationCounter = 0
@@ -73,8 +79,11 @@ class PhoneEndpoint(
         },
         limits = mapOf(
             SenseCapability.AudioInput to SenseLimits(maxDurationMillis = 60_000, maxBytes = 1_048_576),
-            SenseCapability.ImageInput to SenseLimits(maxBytes = 65536),
+            SenseCapability.ImageInput to SenseLimits(maxBytes = 65_536),
             SenseCapability.AudioOutput to SenseLimits(maxBytes = 1_048_576, maxConcurrent = 1),
+            SenseCapability.VisualOutput to SenseLimits(maxBytes = 10_000_000),
+            SenseCapability.TextOutput to SenseLimits(maxBytes = 65_536),
+            SenseCapability.StatusInput to SenseLimits(maxDurationMillis = 5_000),
         ),
         concurrency = ConcurrencyProfile(
             resourceDomains = mapOf(
@@ -85,12 +94,10 @@ class PhoneEndpoint(
                 SenseCapability.TextOutput to "phone-screen",
                 SenseCapability.TextInput to "phone-ui",
                 SenseCapability.InteractionInput to "phone-ui",
-            ).filterKeys { it in (setOf(
-                SenseCapability.AudioInput, SenseCapability.AudioOutput,
-                SenseCapability.ImageInput, SenseCapability.VisualOutput,
-                SenseCapability.TextOutput, SenseCapability.TextInput,
-                SenseCapability.InteractionInput,
-            )) },
+            ),
+            explicitConflicts = setOf(
+                SenseCapability.AudioInput to SenseCapability.AudioOutput,
+            ),
         ),
         displayName = config.displayName,
     )
@@ -103,11 +110,14 @@ class PhoneEndpoint(
 
     override suspend fun disconnect() {
         if (ttsActive) {
-            // Cancel any active TTS utterance
             ttsActive = false
         }
         ttsInitialized = false
         connected = false
+    }
+
+    private fun ensureConnected() {
+        if (!connected) throw SensesError.Disconnected("Phone endpoint not connected")
     }
 
     private fun checkPermission(permission: String) {
@@ -121,14 +131,38 @@ class PhoneEndpoint(
     override suspend fun audioInput(request: AudioInputRequest): AudioInputResult {
         if (!config.hasMicrophone) throw SensesError.Unavailable("No microphone")
         checkPermission("RECORD_AUDIO")
+        ensureConnected()
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
-        // In real implementation: AudioRecord with permission check
+
+        val bytesPerSample = config.audioFormat.bitDepth / 8 * config.audioFormat.channels
+        val bytesPerSecond = config.audioFormat.sampleRate * bytesPerSample
+        val bytesPerMs = bytesPerSecond / 1000L
+
+        val maxByDuration = request.maxDurationMillis * bytesPerMs
+        val maxByBytes = request.maxBytes.coerceAtMost(PhoneConfig.MAX_AUDIO_BYTES).toLong()
+        val targetBytes = minOf(maxByDuration, maxByBytes).toInt().coerceAtLeast(0)
+
+        val pcm = if (config.audioFixture.isEmpty()) {
+            ByteArray(0)
+        } else {
+            ByteArray(targetBytes) { config.audioFixture[it % config.audioFixture.size] }
+        }
+
+        val wav = PcmToWav.fromPcm16(
+            pcm,
+            config.audioFormat.sampleRate,
+            config.audioFormat.channels,
+            config.audioFormat.bitDepth,
+        )
+
+        val durationMillis = if (bytesPerSecond > 0) pcm.size * 1000L / bytesPerSecond else 0L
+
         val completedAt = System.currentTimeMillis()
         return AudioInputResult(
-            audio = config.audioFixture,
+            audio = wav,
             format = config.audioFormat,
-            durationMillis = config.audioDurationMillis,
+            durationMillis = durationMillis,
             provenance = Provenance(
                 operationId = opId,
                 endpointId = config.endpointId,
@@ -139,7 +173,7 @@ class PhoneEndpoint(
                 mediaFormat = MediaFormat(
                     encoding = config.audioFormat.encoding,
                     mime = config.audioFormat.mime,
-                    durationMillis = config.audioDurationMillis,
+                    durationMillis = durationMillis,
                     sampleRate = config.audioFormat.sampleRate,
                     channels = config.audioFormat.channels,
                 ),
@@ -151,6 +185,7 @@ class PhoneEndpoint(
 
     override suspend fun audioOutput(request: AudioOutputRequest): AudioOutputResult {
         if (!config.hasSpeaker) throw SensesError.Unavailable("No speaker")
+        ensureConnected()
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
         // In real implementation: AudioTrack playback with pacing
@@ -180,15 +215,23 @@ class PhoneEndpoint(
     override suspend fun imageInput(request: ImageInputRequest): ImageInputResult {
         if (!config.hasCamera) throw SensesError.Unavailable("No camera")
         checkPermission("CAMERA")
+        ensureConnected()
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
-        // In real implementation: CameraX capture, normalize orientation,
-        // center-crop to 640x640, encode as JPEG
+
+        val image = if (config.imageFixture.size <= request.maxBytes) {
+            config.imageFixture
+        } else {
+            config.imageFixture.copyOfRange(0, request.maxBytes)
+        }
+
+        val isRaw = request.deviceOptions["raw"] as? Boolean ?: false
+
         val completedAt = System.currentTimeMillis()
         return ImageInputResult(
-            image = config.imageFixture,
-            format = config.imageFormat,
-            isRaw = request.deviceOptions["raw"] as? Boolean ?: false,
+            image = image,
+            format = config.imageFormat.copy(width = request.resolution, height = request.resolution),
+            isRaw = isRaw,
             provenance = Provenance(
                 operationId = opId,
                 endpointId = config.endpointId,
@@ -199,8 +242,8 @@ class PhoneEndpoint(
                 mediaFormat = MediaFormat(
                     encoding = config.imageFormat.encoding,
                     mime = config.imageFormat.mime,
-                    width = config.imageFormat.width,
-                    height = config.imageFormat.height,
+                    width = request.resolution,
+                    height = request.resolution,
                 ),
                 startedAt = startedAt,
                 completedAt = completedAt,
@@ -210,6 +253,7 @@ class PhoneEndpoint(
 
     override suspend fun visualOutput(request: VisualOutputRequest): VisualOutputResult {
         if (!config.hasScreen) throw SensesError.Unavailable("No screen")
+        ensureConnected()
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
         val completedAt = System.currentTimeMillis()
@@ -229,6 +273,7 @@ class PhoneEndpoint(
 
     override suspend fun textOutput(request: TextOutputRequest): TextOutputResult {
         if (!config.hasScreen) throw SensesError.Unavailable("No screen")
+        ensureConnected()
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
         val completedAt = System.currentTimeMillis()
@@ -248,6 +293,7 @@ class PhoneEndpoint(
 
     override suspend fun textInput(request: TextInputRequest): TextInputResult {
         if (!config.hasKeyboard) throw SensesError.Unavailable("No keyboard")
+        ensureConnected()
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
         val completedAt = System.currentTimeMillis()
@@ -268,11 +314,19 @@ class PhoneEndpoint(
 
     override suspend fun interactionInput(request: InteractionInputRequest): InteractionInputResult {
         if (!config.hasKeyboard) throw SensesError.Unavailable("No touch input")
+        ensureConnected()
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
         val completedAt = System.currentTimeMillis()
+        val event = if (request.acceptedGestures.isEmpty() || InteractionType.TAP_SINGLE in request.acceptedGestures) {
+            InteractionEvent.Tap(TapGesture.SINGLE)
+        } else if (InteractionType.TEXT_ENTRY in request.acceptedGestures) {
+            InteractionEvent.TextEntry("")
+        } else {
+            InteractionEvent.Approval(approved = true)
+        }
         return InteractionInputResult(
-            event = InteractionEvent.Tap(TapGesture.SINGLE),
+            event = event,
             provenance = Provenance(
                 operationId = opId,
                 endpointId = config.endpointId,
@@ -288,6 +342,7 @@ class PhoneEndpoint(
 
     override suspend fun statusInput(request: StatusInputRequest): StatusInputResult {
         if (!config.hasBattery) throw SensesError.Unavailable("No battery status")
+        ensureConnected()
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
         val completedAt = System.currentTimeMillis()

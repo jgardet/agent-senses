@@ -1,21 +1,23 @@
-package com.nyooran.agent.senses.android.audio
+package com.nyooran.agent.senses.audio
 
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 /**
- * Streaming WAV reader for PCM data produced by Android [TextToSpeech].
+ * Streaming WAV reader for PCM data produced by Android [TextToSpeech] or
+ * other TTS sources. Resides in `core` so both JVM backend modules and
+ * Android clients can share one implementation.
  *
  * Only supports uncompressed PCM (audio format 1), 8 or 16 bits per sample,
  * mono or stereo. Emits 16-bit little-endian mono PCM at [targetSampleRate]
  * in [frameMillis]-length chunks by linear resampling and channel mixing.
  *
  * The flow-based API keeps at most one output frame in memory at a time, so
- * long TTS utterances can be sent directly to the Halo speaker without loading
- * the whole resampled PCM into a single [ByteArray].
+ * long TTS utterances can be sent directly to a speaker or transcoder without
+ * loading the whole resampled PCM into a single [ByteArray].
  */
 object WavReader {
 

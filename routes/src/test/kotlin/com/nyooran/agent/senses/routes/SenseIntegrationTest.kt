@@ -51,7 +51,10 @@ class SenseIntegrationTest {
             VisionResult(description = description, confidence = 0.88f, objects = objects)
     }
 
-    private fun ApplicationTestBuilder.setupServer(vararg endpoints: SenseEndpoint): SenseEndpointRegistry {
+    private fun ApplicationTestBuilder.setupServer(
+        vararg endpoints: SenseEndpoint,
+        connect: Boolean = true,
+    ): SenseEndpointRegistry {
         val registry = SenseEndpointRegistry()
         val workflows = SemanticSenseWorkflows(
             registry = registry,
@@ -62,7 +65,12 @@ class SenseIntegrationTest {
             install(ContentNegotiation) { json(json) }
             routing { senseCapabilityRoutes(registry, authToken, workflows) }
         }
-        runBlocking { endpoints.forEach { registry.bind(it) } }
+        runBlocking {
+            endpoints.forEach {
+                if (connect) it.connect()
+                registry.bind(it)
+            }
+        }
         return registry
     }
 
@@ -305,6 +313,29 @@ class SenseIntegrationTest {
     }
 
     // ------------------------------------------------------------------ all routes smoke test
+
+    // ------------------------------------------------------------------ physical Halo via fake transport
+
+    @Test
+    fun e2ePhysicalHaloStatusReturnsBattery() = testApplication {
+        val physical = com.nyooran.agent.senses.halo.PhysicalHaloEndpoint(
+            transport = com.nyooran.agent.senses.simulator.SimulatedHaloBleTransport(
+                scenario = com.nyooran.agent.senses.simulator.Scenario(audioFixture = ByteArray(512)),
+            ),
+            config = com.nyooran.agent.senses.halo.PhysicalHaloEndpoint.HaloEndpointConfig(
+                endpointId = EndpointId("halo-physical-1"),
+                runtimeInstaller = { },
+            ),
+        )
+        setupServer(physical)
+        val response = jsonClient().post("/v1/sense/status") {
+            auth(); setBody("""{"endpoint_id": "halo-physical-1"}""")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        val body = response.body<StatusResponse>()
+        assertEquals(80, body.battery_level)
+        assertEquals("PHYSICAL", body.provenance.backend_kind)
+    }
 
     @Test
     fun e2eAllRoutesAccessibleWithSimulatedHalo() = testApplication {

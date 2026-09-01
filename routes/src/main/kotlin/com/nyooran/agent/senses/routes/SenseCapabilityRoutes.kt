@@ -476,7 +476,10 @@ private suspend fun respondError(call: ApplicationCall, error: SensesError) {
         is SensesError.ModelUnavailable -> HttpStatusCode.ServiceUnavailable
         is SensesError.Internal -> HttpStatusCode.InternalServerError
     }
-    call.respond(status, ErrorResponse(error = error.message ?: "unknown error"))
+    call.respond(status, ErrorResponse(
+        error = error.message ?: "unknown error",
+        category = error.category.name,
+    ))
 }
 
 private fun Provenance.toDto() = ProvenanceDto(

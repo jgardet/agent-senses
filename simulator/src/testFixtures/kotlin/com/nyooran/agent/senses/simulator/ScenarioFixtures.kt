@@ -5,7 +5,6 @@ import com.nyooran.agent.senses.DeviceFeature
 import com.nyooran.agent.senses.DeviceTarget
 import com.nyooran.agent.senses.ImageFormat
 import com.nyooran.agent.senses.SensesError
-import com.nyooran.agent.senses.TapEvent
 
 /**
  * Pre-built [Scenario] fixtures for common agent-senses test paths.
@@ -51,13 +50,6 @@ object ScenarioFixtures {
     /** A capture request that the simulator rejects as a device error. */
     fun deviceError() = Scenario(
         audioError = SensesError.Unavailable("simulated audio subsystem failure"),
-    )
-
-    /** A single tap is delivered after [delayMillis]. */
-    fun tapAfter(delayMillis: Long = 50, source: String = "button", gesture: String = "single") = Scenario(
-        scheduledEvents = listOf(
-            Scenario.ScheduledEvent(delayMillis, TapEvent(source, gesture, 0)),
-        ),
     )
 
     /** The device disconnects while an audio capture is in progress. */

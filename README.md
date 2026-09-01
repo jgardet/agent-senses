@@ -49,10 +49,9 @@ All failures surface as `SensesError`, a sealed `RuntimeException` with a `Categ
 
 | Module | Type | Role |
 |--------|------|------|
-| `core` | Kotlin/JVM | `SensesDevice` interface, DTOs, `SensesError`, `InputEvent` hierarchy. No Android or BLE dependencies. |
-| `halo` | Kotlin/JVM | Halo-specific protocol bridges between `core` and the `graphic-engine-halo` engine abstractions. |
-| `android` | Android library | Physical Halo BLE adapter: `HaloSensesDevice`, `HaloConnectionManager`, `SensesDeviceFactory`, and audio helpers (`PcmToWav`, `WavReader`). |
-| `simulator` | Kotlin/JVM | Deterministic `SimulatedSensesDevice`, `SimulatedHaloBleTransport`, `Scenario` scripts, `ScenarioFixtures`, and `TimeSource` for virtual-time tests. |
+| `core` | Kotlin/JVM | `SenseEndpoint` contract, `SenseEndpointRegistry`, `SenseProfile`, `SenseCapability`, `SenseFailure`, and audio helpers (`PcmToWav`, `WavReader`). No Android or BLE dependencies. |
+| `halo` | Kotlin/JVM | Halo-specific `PhysicalHaloEndpoint` bridging `core` and the `graphic-engine-halo` engine abstractions. |
+| `simulator` | Kotlin/JVM | Deterministic `SimulatedHaloEndpoint`, `SimulatedHaloBleTransport`, `Scenario` scripts, `ScenarioFixtures`, and `TimeSource` for virtual-time tests. |
 
 The `graphic-engine-halo` composite build is included via `settings.gradle.kts` and provides `halo.engine:kotlin` and `halo.engine:android` through dependency substitution.
 

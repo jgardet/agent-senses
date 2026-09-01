@@ -29,4 +29,5 @@ dependencies {
     testImplementation("io.ktor:ktor-server-test-host:2.3.12")
     testImplementation("io.ktor:ktor-client-content-negotiation:2.3.12")
     testImplementation(testFixtures(project(":simulator")))
+    testImplementation(project(":halo"))
 }

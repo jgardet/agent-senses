@@ -23,7 +23,7 @@ import kotlinx.coroutines.sync.withLock
 /**
  * A protocol-level virtual BLE transport for the Halo engine.
  *
- * This lets `HaloSession` and `HaloConnectionManager` tests run without Android
+ * This lets `HaloSession` and `PhysicalHaloEndpoint` tests run without Android
  * Bluetooth or a physical device by simulating the message stream, chunking,
  * and ACK behavior that the firmware would produce.
  */
@@ -178,7 +178,7 @@ class SimulatedHaloBleTransport(
         } else {
             val format = scenario.audioFormat
             val bytesPerSample = format.bitDepth / 8
-            val sampleCount = (1000 * format.sampleRate / 1000).toInt()
+            val sampleCount = format.sampleRate
             val size = sampleCount * bytesPerSample * format.channels
             ByteArray(size.coerceAtLeast(512).coerceAtMost(32_768)) { ((it * 137) % 256).toByte() }
         }
