@@ -30,6 +30,7 @@ fun Route.senseCapabilityRoutes(
     registry: SenseEndpointRegistry,
     authToken: String,
     workflows: SemanticSenseWorkflows? = null,
+    onMediaCaptured: ((MediaCaptured) -> Unit)? = null,
 ) {
     val json = Json { ignoreUnknownKeys = true }
 
@@ -81,6 +82,21 @@ fun Route.senseCapabilityRoutes(
             )
             result.fold(
                 onSuccess = { r ->
+                    if (req.raw && r.rawAudio != null) {
+                        onMediaCaptured?.invoke(
+                            MediaCaptured(
+                                kind = "audio",
+                                base64 = Base64.getEncoder().encodeToString(r.rawAudio),
+                                mimeType = r.rawAudioFormat?.mime ?: "audio/wav",
+                                endpointId = r.rawAudioProvenance.endpointId.value,
+                                operationId = r.rawAudioProvenance.operationId,
+                                provenance = mapOf(
+                                    "capability" to "AudioInput",
+                                    "transcript" to r.transcript,
+                                ),
+                            )
+                        )
+                    }
                     call.respond(r.toListenResponse(req.raw))
                 },
                 onFailure = { e ->
@@ -131,6 +147,21 @@ fun Route.senseCapabilityRoutes(
             )
             result.fold(
                 onSuccess = { r ->
+                    if (req.raw && r.rawImage != null) {
+                        onMediaCaptured?.invoke(
+                            MediaCaptured(
+                                kind = "image",
+                                base64 = Base64.getEncoder().encodeToString(r.rawImage),
+                                mimeType = r.rawImageFormat?.mime ?: "image/jpeg",
+                                endpointId = r.rawImageProvenance.endpointId.value,
+                                operationId = r.rawImageProvenance.operationId,
+                                provenance = mapOf(
+                                    "capability" to "ImageInput",
+                                    "description" to r.description,
+                                ),
+                            )
+                        )
+                    }
                     call.respond(r.toLookResponse(req.raw))
                 },
                 onFailure = { e ->
@@ -244,6 +275,18 @@ fun Route.senseCapabilityRoutes(
         }
         try {
             val result = endpoint.audioOutput(senseReq)
+            onMediaCaptured?.invoke(
+                MediaCaptured(
+                    kind = "audio",
+                    base64 = req.audio_base64,
+                    mimeType = req.format.mime,
+                    endpointId = endpoint.profile.endpointId.value,
+                    operationId = result.provenance.operationId,
+                    provenance = mapOf(
+                        "capability" to "AudioOutput",
+                    ),
+                )
+            )
             call.respond(SpeakResponse(provenance = result.provenance.toDto()))
         } catch (e: CancellationException) {
             throw e
@@ -328,6 +371,21 @@ fun Route.senseCapabilityRoutes(
         }
         try {
             val result = endpoint.visualOutput(senseReq)
+            if (kind == VisualContent.VisualKind.IMAGE && req.payload_base64 != null) {
+                onMediaCaptured?.invoke(
+                    MediaCaptured(
+                        kind = "image",
+                        base64 = req.payload_base64,
+                        mimeType = "image/jpeg",
+                        endpointId = endpoint.profile.endpointId.value,
+                        operationId = result.provenance.operationId,
+                        provenance = mapOf(
+                            "capability" to "VisualOutput",
+                            "kind" to "image",
+                        ),
+                    )
+                )
+            }
             call.respond(PresentResponse(provenance = result.provenance.toDto()))
         } catch (e: CancellationException) {
             throw e
