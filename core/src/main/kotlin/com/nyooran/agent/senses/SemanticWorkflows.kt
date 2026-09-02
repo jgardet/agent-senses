@@ -112,14 +112,4 @@ data class SemanticPresentResult(
     val outputProvenance: Provenance,
 )
 
-/**
- * Partial result when one modality fails in a multi-modal workflow.
- */
-data class PartialResult<T>(
-    val success: T? = null,
-    val failure: SenseFailure? = null,
-) {
-    val isComplete get() = success != null && failure == null
-    val isPartial get() = success != null && failure != null
-    val isFailed get() = success == null
-}
+
