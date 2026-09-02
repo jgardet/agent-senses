@@ -21,6 +21,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -37,6 +38,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -160,7 +162,7 @@ class PhysicalHaloEndpoint(
         _state.value = EndpointState.READY
     }
 
-    override suspend fun disconnect() {
+    override suspend fun disconnect() = withContext(NonCancellable) {
         runCatching { transport.disconnect() }
         cancelJobs()
         _state.value = EndpointState.DISCONNECTED
@@ -281,7 +283,9 @@ class PhysicalHaloEndpoint(
         } catch (e: CancellationException) {
             throw e
         } finally {
-            runCatching { transport.sendMessage(HaloProtocol.SPEAKER_STOP, byteArrayOf()) }
+            withContext(NonCancellable) {
+                runCatching { transport.sendMessage(HaloProtocol.SPEAKER_STOP, byteArrayOf()) }
+            }
         }
 
         val completedAt = System.currentTimeMillis()
