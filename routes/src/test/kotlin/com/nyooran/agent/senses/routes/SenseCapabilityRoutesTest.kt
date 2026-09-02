@@ -146,7 +146,12 @@ class SenseCapabilityRoutesTest {
     @Test
     fun waitReturnsInteractionEvent() = testApplication {
         val registry = setupServer()
-        kotlinx.coroutines.runBlocking { registry.bind(SimulatedHaloEndpoint()) }
+        val endpoint = SimulatedHaloEndpoint()
+        kotlinx.coroutines.runBlocking {
+            endpoint.connect()
+            endpoint.injectTap(TapGesture.SINGLE)
+            registry.bind(endpoint)
+        }
         val response = jsonClient().post("/v1/sense/wait") {
             auth()
             setBody("""{}""")

@@ -18,6 +18,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
 import kotlin.math.ceil
 
+// Minimal JPEG marker sequence used as a default simulator fixture.
+private val MINIMAL_JPEG = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xD9.toByte())
+
 /**
  * Phase 3 P3-04: Simulated Halo sense endpoint.
  *
@@ -53,7 +56,7 @@ class SimulatedHaloEndpoint(
         val audioFixture: ByteArray = ByteArray(320) { 0 },  // 10ms of 16kHz mono
         val audioDurationMillis: Long = 100,
         val audioFormat: AudioFormat = AudioFormat(16000, 16, 1, "wav", "audio/wav"),
-        val imageFixture: ByteArray = ByteArray(0),
+        val imageFixture: ByteArray = MINIMAL_JPEG,
         val imageFormat: ImageFormat = ImageFormat("jpeg", "image/jpeg", 640, 640),
         val connectionDelayMillis: Long = 0,
         val micChunkCount: Int = 1000,
@@ -324,11 +327,10 @@ class SimulatedHaloEndpoint(
         val events = photoMachine.drainEvents()
         val photoChunks = events.filterIsInstance<DeviceEvent.Message>()
             .filter { it.code == HaloProtocol.PHOTO_JPEG }
-        val image = if (photoChunks.isNotEmpty()) {
-            photoChunks.flatMap { it.payload.toList() }.toByteArray()
-        } else {
-            scenario.imageFixture
+        if (photoChunks.isEmpty()) {
+            throw SensesError.Internal("simulator photo capture did not emit image data")
         }
+        val image = photoChunks.flatMap { it.payload.toList() }.toByteArray()
 
         val completedAt = System.currentTimeMillis()
         return ImageInputResult(
@@ -454,10 +456,9 @@ class SimulatedHaloEndpoint(
         val opId = "sim-op-${++operationCounter}"
         val startedAt = System.currentTimeMillis()
 
-        val event = pollInteraction(request) ?: defaultInteraction(request.acceptedGestures)
-        if (!eventFromQueue) {
-            _recordedInteractions.add(event)
-        }
+        val event = pollInteraction(request)
+            ?: throw SensesError.Unavailable("simulator has no matching interaction queued")
+        _recordedInteractions.add(event)
 
         val completedAt = System.currentTimeMillis()
         return InteractionInputResult(
@@ -476,36 +477,16 @@ class SimulatedHaloEndpoint(
         )
     }
 
-    private var eventFromQueue = false
-
     private fun pollInteraction(request: InteractionInputRequest): InteractionEvent? {
         val iterator = interactionQueue.iterator()
         while (iterator.hasNext()) {
             val event = iterator.next()
             if (request.acceptedGestures.isEmpty() || InteractionFilter(event, request)) {
                 iterator.remove()
-                eventFromQueue = true
                 return event
             }
         }
-        eventFromQueue = false
         return null
-    }
-
-    private fun defaultInteraction(accepted: Set<InteractionType>): InteractionEvent {
-        val type = GESTURE_PRIORITY.firstOrNull { it in accepted }
-            ?: InteractionType.TAP_SINGLE
-        return when (type) {
-            InteractionType.TAP_SINGLE -> InteractionEvent.Tap(TapGesture.SINGLE)
-            InteractionType.TAP_DOUBLE -> InteractionEvent.Tap(TapGesture.DOUBLE)
-            InteractionType.TAP_TRIPLE -> InteractionEvent.Tap(TapGesture.TRIPLE)
-            InteractionType.BUTTON_SINGLE -> InteractionEvent.Button(ButtonGesture.SINGLE)
-            InteractionType.BUTTON_DOUBLE -> InteractionEvent.Button(ButtonGesture.DOUBLE)
-            InteractionType.BUTTON_LONG -> InteractionEvent.Button(ButtonGesture.LONG)
-            InteractionType.APPROVAL -> InteractionEvent.Approval(approved = true)
-            InteractionType.SELECTION -> InteractionEvent.Selection(selectedIndex = 0)
-            InteractionType.TEXT_ENTRY -> InteractionEvent.TextEntry("")
-        }
     }
 
     override suspend fun statusInput(request: StatusInputRequest): StatusInputResult {
@@ -515,20 +496,16 @@ class SimulatedHaloEndpoint(
         val events = stateMachine.drainEvents()
         val statusMsg = events.filterIsInstance<DeviceEvent.Message>()
             .firstOrNull { it.code == HaloProtocol.DEVICE_STATUS }
-        val completedAt = System.currentTimeMillis()
-        val status = if (statusMsg != null && statusMsg.payload.size >= 4) {
-            EndpointStatus(
-                batteryLevel = statusMsg.payload[0].toInt() and 0xFF,
-                batteryVoltage = ((statusMsg.payload[1].toInt() and 0xFF) shl 8) or (statusMsg.payload[2].toInt() and 0xFF),
-                batteryCharging = (statusMsg.payload[3].toInt() and 0xFF) != 0,
-            )
-        } else {
-            EndpointStatus(
-                batteryLevel = scenario.batteryLevel,
-                batteryVoltage = scenario.batteryVoltage,
-                batteryCharging = scenario.batteryCharging,
-            )
+            ?: throw SensesError.Unavailable("simulator did not emit a status message")
+        if (statusMsg.payload.size < 4) {
+            throw SensesError.Protocol("simulator status payload too short: ${statusMsg.payload.size} bytes")
         }
+        val completedAt = System.currentTimeMillis()
+        val status = EndpointStatus(
+            batteryLevel = statusMsg.payload[0].toInt() and 0xFF,
+            batteryVoltage = ((statusMsg.payload[1].toInt() and 0xFF) shl 8) or (statusMsg.payload[2].toInt() and 0xFF),
+            batteryCharging = (statusMsg.payload[3].toInt() and 0xFF) != 0,
+        )
         return StatusInputResult(
             status = status,
             provenance = Provenance(
@@ -574,17 +551,5 @@ class SimulatedHaloEndpoint(
         interactionQueue.add(event)
     }
 
-    companion object {
-        private val GESTURE_PRIORITY = listOf(
-            InteractionType.TAP_SINGLE,
-            InteractionType.TAP_DOUBLE,
-            InteractionType.TAP_TRIPLE,
-            InteractionType.BUTTON_SINGLE,
-            InteractionType.BUTTON_DOUBLE,
-            InteractionType.BUTTON_LONG,
-            InteractionType.APPROVAL,
-            InteractionType.SELECTION,
-            InteractionType.TEXT_ENTRY,
-        )
-    }
+
 }

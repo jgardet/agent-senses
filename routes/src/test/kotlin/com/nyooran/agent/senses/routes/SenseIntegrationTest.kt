@@ -339,7 +339,12 @@ class SenseIntegrationTest {
 
     @Test
     fun e2eAllRoutesAccessibleWithSimulatedHalo() = testApplication {
-        setupServer(SimulatedHaloEndpoint())
+        val endpoint = SimulatedHaloEndpoint()
+        runBlocking {
+            endpoint.connect()
+            endpoint.injectTap(TapGesture.SINGLE)
+        }
+        setupServer(endpoint, connect = false)
         val client = jsonClient()
 
         // Capabilities

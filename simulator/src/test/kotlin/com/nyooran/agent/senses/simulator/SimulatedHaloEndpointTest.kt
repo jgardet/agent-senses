@@ -197,6 +197,7 @@ class SimulatedHaloEndpointTest {
     fun interactionInputReturnsTapEvent() = runTest {
         val ep = makeEndpoint()
         ep.connect()
+        ep.injectTap(TapGesture.SINGLE)
         val result = ep.interactionInput(InteractionInputRequest(
             acceptedGestures = setOf(InteractionType.TAP_SINGLE),
         ))
