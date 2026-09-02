@@ -93,6 +93,7 @@ fun Route.senseCapabilityRoutes(
                                 provenance = mapOf(
                                     "capability" to "AudioInput",
                                     "transcript" to r.transcript,
+                                    "duration_millis" to (r.rawAudioProvenance.mediaFormat?.durationMillis ?: 0L).toString(),
                                 ),
                             )
                         )
@@ -284,6 +285,8 @@ fun Route.senseCapabilityRoutes(
                     operationId = result.provenance.operationId,
                     provenance = mapOf(
                         "capability" to "AudioOutput",
+                        "sample_rate" to req.format.sample_rate.toString(),
+                        "encoding" to req.format.encoding,
                     ),
                 )
             )
@@ -315,6 +318,24 @@ fun Route.senseCapabilityRoutes(
             val result = workflows.speakText(req.text, endpointId)
             result.fold(
                 onSuccess = { r ->
+                    r.audio?.let { audioBytes ->
+                        onMediaCaptured?.invoke(
+                            MediaCaptured(
+                                kind = "audio",
+                                base64 = Base64.getEncoder().encodeToString(audioBytes),
+                                mimeType = r.format?.mime ?: "audio/wav",
+                                endpointId = r.outputProvenance.endpointId.value,
+                                operationId = r.outputProvenance.operationId,
+                                provenance = mapOf(
+                                    "capability" to "AudioOutput",
+                                    "source" to "tts",
+                                    "sample_rate" to (r.format?.sampleRate ?: 16000).toString(),
+                                    "encoding" to (r.format?.encoding ?: "wav"),
+                                    "text" to req.text,
+                                ),
+                            )
+                        )
+                    }
                     call.respond(SayResponse(
                         tts_provenance = r.ttsProvenance.toDto(),
                         output_provenance = r.outputProvenance.toDto(),

@@ -36,7 +36,7 @@ data class ListenRequest(
     val gain: Int = 0,
     val aec: Boolean = true,
     val voice: Boolean = true,
-    val max_bytes: Int = 65536,
+    val max_bytes: Int = 1_048_576,
     val raw: Boolean = false,
     val timeout_millis: Long = 0,
 )
@@ -60,7 +60,7 @@ data class LookRequest(
     val endpoint_id: String? = null,
     val resolution: Int = 640,
     val quality_index: Int = 0,
-    val max_bytes: Int = 65536,
+    val max_bytes: Int = 1_048_576,
     val raw: Boolean = false,
     val prompt: String? = null,
     val timeout_millis: Long = 30000,

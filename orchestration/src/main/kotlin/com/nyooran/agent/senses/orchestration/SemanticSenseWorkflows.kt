@@ -42,7 +42,7 @@ class SemanticSenseWorkflows(
      */
     suspend fun listenAndTranscribe(
         endpointId: EndpointId? = null,
-        request: AudioInputRequest = AudioInputRequest(maxDurationMillis = 5_000, maxBytes = 65_536),
+        request: AudioInputRequest = AudioInputRequest(maxDurationMillis = 5_000, maxBytes = 1_048_576),
         keepRaw: Boolean = false,
     ): Result<SemanticListenResult> = cancellationAware {
         val endpoint = resolve(endpointId, SenseCapability.AudioInput)
@@ -61,7 +61,7 @@ class SemanticSenseWorkflows(
      */
     suspend fun lookAndObserve(
         endpointId: EndpointId? = null,
-        request: ImageInputRequest = ImageInputRequest(resolution = 640, maxBytes = 65_536),
+        request: ImageInputRequest = ImageInputRequest(resolution = 640, maxBytes = 1_048_576),
         prompt: String? = null,
         keepRaw: Boolean = false,
     ): Result<SemanticLookResult> = cancellationAware {
@@ -110,6 +110,8 @@ class SemanticSenseWorkflows(
             SemanticSpeakResult(
                 ttsProvenance = ttsProvenance,
                 outputProvenance = outputResult.provenance,
+                audio = ttsResult.audio,
+                format = ttsResult.format,
             )
         }
     }

@@ -100,6 +100,9 @@ data class SemanticLookResult(
 data class SemanticSpeakResult(
     val ttsProvenance: Provenance,
     val outputProvenance: Provenance,
+    /** TTS audio that was sent to the endpoint, when available for diagnostics replay. */
+    val audio: ByteArray? = null,
+    val format: AudioFormat? = null,
 )
 
 /**
