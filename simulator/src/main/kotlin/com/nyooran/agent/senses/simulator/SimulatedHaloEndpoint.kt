@@ -24,7 +24,7 @@ private val MINIMAL_JPEG = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte
 /**
  * Phase 3 P3-04: Simulated Halo sense endpoint.
  *
- * Wraps the engine-halo virtual runtime (CapabilityStateMachine + HrpRenderer)
+ * Wraps the halo-engine virtual runtime (CapabilityStateMachine + HrpRenderer)
  * as a [SenseEndpoint] implementing the Phase 2 contract. This is the
  * deterministic test fixture for Halo-specific behavior — it produces
  * realistic device responses without BLE hardware.

@@ -8,10 +8,10 @@ terms.
 - kotlinx-coroutines
 - kotlinx-serialization
 - Ktor route/test libraries
-- `graphic-engine-halo` composite-build modules
+- `halo-engine` composite-build modules
 
 The physical Halo implementation uses protocol and transport abstractions from the
-sibling `graphic-engine-halo` repository. No Brilliant SDK or firmware repository is
+sibling `halo-engine` repository. No Brilliant SDK or firmware repository is
 vendored here. Any separately obtained SDK, firmware, or device binary must retain
 its upstream notices.
 

@@ -13,7 +13,7 @@ import kotlinx.coroutines.delay
  * - Partial multimodal delivery (configurable per-capability failures)
  * - Stable fixture IDs
  *
- * Unlike [SimulatedHaloEndpoint], this endpoint has no engine-halo dependency
+ * Unlike [SimulatedHaloEndpoint], this endpoint has no halo-engine dependency
  * and can be used in pure core/orchestration tests.
  */
 class FixtureEndpoint(

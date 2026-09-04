@@ -38,17 +38,17 @@ SemanticSenseWorkflows + SenseEndpointRegistry
 | Module | Role |
 |---|---|
 | `core` | Pure Kotlin contracts, profiles, failures, coordination, runtime lifecycle, and WAV helpers |
-| `halo` | `PhysicalHaloEndpoint` backed by `graphic-engine-halo` transport/session abstractions |
+| `halo` | `PhysicalHaloEndpoint` backed by `halo-engine` transport/session abstractions |
 | `simulator` | Deterministic `SimulatedHaloEndpoint`, scripted scenarios, virtual time, and test fixtures |
 | `routes` | Authenticated Ktor routes for the generic `/v1/sense/*` API |
 | `orchestration` | Semantic workflows and multi-modal operation composition |
 
-The `graphic-engine-halo` composite build is included by `settings.gradle.kts` and
+The `halo-engine` composite build is included by `settings.gradle.kts` and
 can be overridden with `-PhaloEngineDir=<path>`.
 
 ## Quick start
 
-Prerequisites: JDK 17 and the sibling `graphic-engine-halo` checkout. The JVM modules
+Prerequisites: JDK 17 and the sibling `halo-engine` checkout. The JVM modules
 build without an Android SDK.
 
 ```powershell

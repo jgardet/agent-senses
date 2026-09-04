@@ -21,7 +21,7 @@ include(":simulator")
 include(":routes")
 include(":orchestration")
 
-val haloEngineDir = providers.gradleProperty("haloEngineDir").orElse("../graphic-engine-halo").get()
+val haloEngineDir = providers.gradleProperty("haloEngineDir").orElse("../halo-engine").get()
 includeBuild(haloEngineDir) {
     dependencySubstitution {
         substitute(module("halo.engine:kotlin")).using(project(":kotlin"))

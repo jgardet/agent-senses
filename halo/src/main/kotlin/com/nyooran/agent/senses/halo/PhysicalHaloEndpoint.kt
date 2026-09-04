@@ -52,7 +52,7 @@ import kotlinx.serialization.json.put
  *
  * Maps generic capability profiles to firmware-negotiated Halo features
  * via a real (or fake) [HaloBleTransport]. Routes capture, playback,
- * display, input, and status through engine-halo's [HaloSession].
+ * display, input, and status through halo-engine's [HaloSession].
  *
  * Key properties:
  * - Rejects unsupported camera parameters before transport (pan, raw).
