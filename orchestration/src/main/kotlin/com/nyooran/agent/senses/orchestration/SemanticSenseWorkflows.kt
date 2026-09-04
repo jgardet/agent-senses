@@ -1,0 +1,395 @@
+package com.nyooran.agent.senses.orchestration
+
+import com.nyooran.agent.senses.*
+import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.supervisorScope
+
+/**
+ * Production semantic sense workflow orchestrator.
+ *
+ * This is the app-facing orchestration layer defined in
+ * AGENT_SENSES_ARCHITECTURE.md (AD-6). It composes raw endpoint
+ * capabilities with model and platform adapters:
+ *
+ * - [listenAndTranscribe]: audio capture → normalization → transcription
+ * - [lookAndObserve]: image capture → normalization → vision observation
+ * - [speakText]: text → TTS synthesis → audio output through selected endpoint
+ * - [presentSemantic]: semantic content → endpoint-appropriate presentation
+ *
+ * The endpoint-facing layer captures or emits bounded media, content,
+ * state, and events. It does not transcribe audio, analyze images,
+ * synthesize language, choose tools, or invent fallbacks. Those
+ * transformations live here, in the orchestration layer, behind
+ * model contracts ([TranscriptionModel], [VisionModel], [TtsModel]).
+ *
+ * Preserves raw observation and transformation provenance.
+ * Keeps raw media ephemeral by default (only returned when keepRaw = true).
+ * Returns partial results when one requested output modality fails.
+ */
+class SemanticSenseWorkflows(
+    private val registry: SenseEndpointRegistry,
+    private val transcriptionModel: TranscriptionModel? = null,
+    private val visionModel: VisionModel? = null,
+    private val ttsModel: TtsModel? = null,
+) {
+
+    /**
+     * Listen on an endpoint, then transcribe the audio.
+     * Returns transcript with both raw audio and transcription provenance.
+     */
+    suspend fun listenAndTranscribe(
+        endpointId: EndpointId? = null,
+        request: AudioInputRequest = AudioInputRequest(maxDurationMillis = 5_000, maxBytes = 1_048_576),
+        keepRaw: Boolean = false,
+    ): Result<SemanticListenResult> = cancellationAware {
+        val endpoint = resolve(endpointId, SenseCapability.AudioInput)
+        withOperation(endpoint) {
+            val audioResult = registry.coordinator.withCapability(endpoint, SenseCapability.AudioInput) {
+                endpoint.audioInput(request)
+            }
+            val transcription = transcribe(audioResult.audio, audioResult.format)
+            buildListenResult(audioResult, transcription, keepRaw)
+        }
+    }
+
+    /**
+     * Look at the environment via an endpoint, then observe the image.
+     * Returns description with both raw image and observation provenance.
+     */
+    suspend fun lookAndObserve(
+        endpointId: EndpointId? = null,
+        request: ImageInputRequest = ImageInputRequest(resolution = 640, maxBytes = 1_048_576),
+        prompt: String? = null,
+        keepRaw: Boolean = false,
+    ): Result<SemanticLookResult> = cancellationAware {
+        val endpoint = resolve(endpointId, SenseCapability.ImageInput)
+        withOperation(endpoint) {
+            val imageResult = registry.coordinator.withCapability(endpoint, SenseCapability.ImageInput) {
+                endpoint.imageInput(request)
+            }
+            val observation = observe(imageResult.image, imageResult.format, prompt)
+            buildLookResult(imageResult, observation, keepRaw)
+        }
+    }
+
+    /**
+     * Synthesize speech from text, then play it through an endpoint.
+     * Returns TTS and output provenance.
+     *
+     * This is the semantic `sense_say` workflow: text → TTS → endpoint
+     * audio output. The lower-level [/v1/sense/speak] route handles
+     * raw audio playback; this workflow adds the TTS transformation.
+     */
+    suspend fun speakText(
+        text: String,
+        endpointId: EndpointId? = null,
+    ): Result<SemanticSpeakResult> = cancellationAware {
+        val ttsResult = synthesize(text)
+        val ttsProvenance = Provenance(
+            operationId = "tts-${System.currentTimeMillis()}",
+            endpointId = EndpointId("model"),
+            backendName = "TtsModel",
+            backendKind = BackendKind.MODEL,
+            capability = SenseCapability.AudioOutput,
+            origin = ResultOrigin.MODEL,
+            transformations = listOf(Transformation.TTS_SYNTHESIS),
+            startedAt = System.currentTimeMillis(),
+            completedAt = System.currentTimeMillis(),
+        )
+        val endpoint = resolve(endpointId, SenseCapability.AudioOutput)
+        withOperation(endpoint) {
+            val outputResult = registry.coordinator.withCapability(endpoint, SenseCapability.AudioOutput) {
+                endpoint.audioOutput(AudioOutputRequest(
+                    audio = ttsResult.audio,
+                    format = ttsResult.format,
+                ))
+            }
+            SemanticSpeakResult(
+                ttsProvenance = ttsProvenance,
+                outputProvenance = outputResult.provenance,
+                audio = ttsResult.audio,
+                format = ttsResult.format,
+            )
+        }
+    }
+
+    /**
+     * Present semantic content on an endpoint.
+     * The content kind is determined by what the endpoint supports.
+     */
+    suspend fun presentSemantic(
+        content: VisualContent,
+        endpointId: EndpointId? = null,
+    ): Result<SemanticPresentResult> = cancellationAware {
+        val endpoint = resolve(endpointId, SenseCapability.VisualOutput)
+        withOperation(endpoint) {
+            val result = registry.coordinator.withCapability(endpoint, SenseCapability.VisualOutput) {
+                endpoint.visualOutput(VisualOutputRequest(content = content))
+            }
+            SemanticPresentResult(outputProvenance = result.provenance)
+        }
+    }
+
+    /**
+     * Multi-modal turn: listen, look, and produce both transcript and
+     * observation. Returns partial results when one modality fails.
+     *
+     * Endpoint resource locks are acquired before any I/O starts. The
+     * endpoint's [ConcurrencyProfile] decides whether listen and look may
+     * overlap. Model inferences run after the locks are released so that
+     * Gemma work does not block other endpoint operations.
+     */
+    suspend fun multiModalTurn(
+        endpointId: EndpointId? = null,
+        visionPrompt: String? = null,
+        keepRaw: Boolean = false,
+    ): MultiModalResult {
+        val endpoint = resolveBoth(
+            endpointId,
+            setOf(SenseCapability.AudioInput, SenseCapability.ImageInput),
+        )
+        return withOperation(endpoint) {
+            val canOverlap = endpoint.profile.canOverlap(
+                SenseCapability.AudioInput,
+                SenseCapability.ImageInput,
+            )
+            val (audioCapture, imageCapture) = registry.coordinator.withCombinedCapabilities(
+                endpoint,
+                setOf(SenseCapability.AudioInput, SenseCapability.ImageInput),
+            ) {
+                val audioRequest = AudioInputRequest(
+                    maxDurationMillis = 5_000,
+                    maxBytes = 65_536,
+                )
+                val imageRequest = ImageInputRequest(
+                    resolution = 640,
+                    maxBytes = 65_536,
+                )
+                if (canOverlap) {
+                    supervisorScope {
+                        val audio = async { cancellationAware { endpoint.audioInput(audioRequest) } }
+                        val image = async { cancellationAware { endpoint.imageInput(imageRequest) } }
+                        audio.await() to image.await()
+                    }
+                } else {
+                    val audio = cancellationAware { endpoint.audioInput(audioRequest) }
+                    val image = cancellationAware { endpoint.imageInput(imageRequest) }
+                    audio to image
+                }
+            }
+
+            val audioFailure = audioCapture.exceptionOrNull()?.toFailure()
+            val imageFailure = imageCapture.exceptionOrNull()?.toFailure()
+
+            val listen = audioCapture.getOrNull()?.let {
+                cancellationAware { buildListenResult(it, transcribe(it.audio, it.format), keepRaw) }
+            }
+            val look = imageCapture.getOrNull()?.let {
+                cancellationAware { buildLookResult(it, observe(it.image, it.format, visionPrompt), keepRaw) }
+            }
+
+            MultiModalResult(
+                listen = listen?.getOrNull(),
+                listenFailure = listen?.exceptionOrNull()?.toFailure() ?: audioFailure,
+                look = look?.getOrNull(),
+                lookFailure = look?.exceptionOrNull()?.toFailure() ?: imageFailure,
+            )
+        }
+    }
+
+    data class MultiModalResult(
+        val listen: SemanticListenResult? = null,
+        val listenFailure: SenseFailure? = null,
+        val look: SemanticLookResult? = null,
+        val lookFailure: SenseFailure? = null,
+    ) {
+        val isComplete get() = listen != null && look != null
+        val isPartial get() = (listen != null || look != null) && (listenFailure != null || lookFailure != null)
+        val isFailed get() = listen == null && look == null
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    /**
+     * Run [block] and wrap non-cancellation failures in a [Result].
+     * Coroutine cancellation is always rethrown so callers can cancel cleanly.
+     */
+    private inline suspend fun <T> cancellationAware(block: suspend () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
+
+    /**
+     * Register [block] as an active operation on [endpoint] and complete it
+     * in a [finally] block, so unbind/replacement can cancel it.
+     */
+    private suspend fun <T> withOperation(endpoint: SenseEndpoint, block: suspend (String) -> T): T {
+        val operationId = registry.nextOperationId()
+        val job = coroutineContext[Job]
+            ?: error("SemanticSenseWorkflows operations must run within a coroutine Job")
+        registry.registerOperation(endpoint.profile.endpointId, operationId, job)
+        try {
+            return block(operationId)
+        } finally {
+            registry.completeOperation(endpoint.profile.endpointId, operationId)
+        }
+    }
+
+    private fun buildListenResult(
+        audioResult: AudioInputResult,
+        transcription: TranscriptionResult,
+        keepRaw: Boolean,
+    ): SemanticListenResult {
+        val transcriptionProvenance = Provenance(
+            operationId = "transcribe-${audioResult.provenance.operationId}",
+            endpointId = audioResult.provenance.endpointId,
+            backendName = "TranscriptionModel",
+            backendKind = BackendKind.MODEL,
+            capability = SenseCapability.AudioInput,
+            origin = ResultOrigin.MODEL,
+            transformations = listOf(Transformation.ASR_TRANSCRIPTION),
+            startedAt = audioResult.provenance.startedAt,
+            completedAt = System.currentTimeMillis(),
+        )
+        return SemanticListenResult(
+            transcript = transcription.transcript,
+            confidence = transcription.confidence,
+            language = transcription.language,
+            rawAudioProvenance = audioResult.provenance,
+            transcriptionProvenance = transcriptionProvenance,
+            rawAudio = if (keepRaw) audioResult.audio else null,
+            rawAudioFormat = audioResult.format,
+        )
+    }
+
+    private fun buildLookResult(
+        imageResult: ImageInputResult,
+        observation: VisionResult,
+        keepRaw: Boolean,
+    ): SemanticLookResult {
+        val observationProvenance = Provenance(
+            operationId = "observe-${imageResult.provenance.operationId}",
+            endpointId = imageResult.provenance.endpointId,
+            backendName = "VisionModel",
+            backendKind = BackendKind.MODEL,
+            capability = SenseCapability.ImageInput,
+            origin = ResultOrigin.MODEL,
+            transformations = listOf(Transformation.VISION_ANALYSIS),
+            startedAt = imageResult.provenance.startedAt,
+            completedAt = System.currentTimeMillis(),
+        )
+        return SemanticLookResult(
+            description = observation.description,
+            confidence = observation.confidence,
+            objects = observation.objects,
+            isRaw = imageResult.isRaw,
+            rawImageProvenance = imageResult.provenance,
+            observationProvenance = observationProvenance,
+            rawImage = if (keepRaw) imageResult.image else null,
+            rawImageFormat = imageResult.format,
+        )
+    }
+
+    private suspend fun transcribe(audio: ByteArray, format: AudioFormat): TranscriptionResult {
+        val model = transcriptionModel
+            ?: throw SensesError.ModelUnavailable("transcription model not configured")
+        return model.transcribe(audio, format)
+    }
+
+    private suspend fun observe(image: ByteArray, format: ImageFormat, prompt: String?): VisionResult {
+        val model = visionModel
+            ?: throw SensesError.ModelUnavailable("vision model not configured")
+        return model.observe(image, format, prompt)
+    }
+
+    private suspend fun synthesize(text: String): TtsResult {
+        val model = ttsModel
+            ?: throw SensesError.ModelUnavailable("TTS model not configured")
+        return model.synthesize(text)
+    }
+
+    private fun resolve(endpointId: EndpointId?, capability: SenseCapability): SenseEndpoint {
+        if (endpointId != null) {
+            return registry.get(endpointId)
+                ?: throw SensesError.Unavailable("endpoint not found: ${endpointId.value}")
+        }
+        return when (val result = registry.resolve(capability)) {
+            is ResolveResult.Resolved -> result.endpoint
+            is ResolveResult.Ambiguous -> throw SensesError.Rejected(
+                "multiple endpoints support ${capability.name()}: ${result.eligible.map { it.profile.endpointId.value }}",
+            )
+            is ResolveResult.NoEndpoint -> throw SensesError.Unavailable("no endpoint supports ${capability.name()}")
+            is ResolveResult.NotFound -> throw SensesError.Unavailable("endpoint not found: ${result.endpointId.value}")
+            is ResolveResult.Unsupported -> throw SensesError.Unavailable(
+                "endpoint ${result.endpoint.profile.endpointId.value} does not support ${capability.name()}",
+            )
+        }
+    }
+
+    private fun resolveBoth(endpointId: EndpointId?, capabilities: Set<SenseCapability>): SenseEndpoint {
+        if (endpointId != null) {
+            val endpoint = registry.get(endpointId)
+                ?: throw SensesError.Unavailable("endpoint not found: ${endpointId.value}")
+            for (capability in capabilities) {
+                if (!endpoint.profile.supports(capability)) {
+                    throw SensesError.Unavailable(
+                        "endpoint ${endpointId.value} does not support ${capability.name()}",
+                    )
+                }
+            }
+            return endpoint
+        }
+        val first = capabilities.first()
+        val eligible = registry.endpointsForCapability(first).filter { endpoint ->
+            capabilities.all { endpoint.profile.supports(it) }
+        }
+        return when {
+            eligible.isEmpty() -> throw SensesError.Unavailable(
+                "no endpoint supports ${capabilities.map { it.name() }}",
+            )
+            eligible.size == 1 -> eligible.first()
+            else -> throw SensesError.Rejected(
+                "multiple endpoints support combined capabilities: ${eligible.map { it.profile.endpointId.value }}",
+            )
+        }
+    }
+
+    private fun SenseCapability.name(): String = when (this) {
+        SenseCapability.AudioInput -> "AudioInput"
+        SenseCapability.AudioOutput -> "AudioOutput"
+        SenseCapability.ImageInput -> "ImageInput"
+        SenseCapability.VisualOutput -> "VisualOutput"
+        SenseCapability.TextOutput -> "TextOutput"
+        SenseCapability.TextInput -> "TextInput"
+        SenseCapability.InteractionInput -> "InteractionInput"
+        SenseCapability.StatusInput -> "StatusInput"
+    }
+
+    private fun Throwable.toFailure(): SenseFailure = when (this) {
+        is SensesError -> SenseFailure(
+            category = when (category) {
+                SensesError.Category.Unavailable -> FailureCategory.UNAVAILABLE
+                SensesError.Category.Disconnected -> FailureCategory.DISCONNECTED
+                SensesError.Category.Timeout -> FailureCategory.TIMEOUT
+                SensesError.Category.Cancelled -> FailureCategory.CANCELLED
+                SensesError.Category.Rejected -> FailureCategory.REJECTED
+                SensesError.Category.LimitExceeded -> FailureCategory.LIMIT_EXCEEDED
+                SensesError.Category.Protocol -> FailureCategory.PROTOCOL
+                SensesError.Category.PermissionDenied -> FailureCategory.PERMISSION_DENIED
+                SensesError.Category.ModelUnavailable -> FailureCategory.MODEL_UNAVAILABLE
+                SensesError.Category.Internal -> FailureCategory.INTERNAL
+            },
+            message = message ?: "unknown error",
+        )
+        else -> SenseFailure(
+            category = FailureCategory.INTERNAL,
+            message = message ?: "unknown error",
+        )
+    }
+}

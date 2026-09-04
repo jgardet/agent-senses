@@ -1,6 +1,7 @@
 plugins {
     kotlin("jvm")
     java
+    `java-test-fixtures`
 }
 
 java {
@@ -19,4 +20,7 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+
+    testFixturesCompileOnly("org.jetbrains.kotlin:kotlin-test-junit:2.3.0")
+    testFixturesImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
 }

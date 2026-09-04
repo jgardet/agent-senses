@@ -1,176 +1,118 @@
 # Agent Senses
 
-**A device-neutral sense layer for agent-driven wearable interfaces.**
+A device-neutral Kotlin sense layer for agent-driven interfaces. It defines typed
+contracts for audio input/output, image input, visual/text output, text input,
+interaction input, and status input across phone, physical Halo, chat, and simulator
+endpoints.
 
-Agent Senses provides a portable Kotlin contract for the input and output capabilities a wearable device exposes to an AI agent: microphone capture, photo capture, speaker playback, display presentation, input events, and battery status. The same contract runs against a physical Brilliant Labs Halo BLE backend and a deterministic in-memory simulator, so agent workflows, adapter tests, and UI debugging share one typed surface.
+## Current architecture
 
-> **Status:** research prototype. The `SensesDevice` contract, the Halo BLE adapter, and the deterministic simulator are implemented and covered by unit tests. Physical-Halo validation, throughput measurements, and Android instrumented tests remain outstanding.
+The Phase 1 `SensesDevice` contract has been removed. The current API is:
 
-## Problem
-
-An agent that drives a wearable needs to listen, look, speak, present, and feel input without knowing whether the backend is a pair of smart glasses over BLE or a scripted simulator. Coupling agent workflows to transport details produces code that works against hardware but is untestable without it, and code that passes a simulator but fails on the device because the two surfaces drifted.
-
-## Approach
-
-The project separates **what the agent asks for** from **how the device delivers it**:
+- `SenseProfile` — endpoint identity, backend kind, state, capabilities, limits, and
+  concurrency profile.
+- `SenseCapability` — the supported input/output capability set.
+- `SenseEndpoint` — typed request/result methods; every result carries `Provenance`.
+- `SenseEndpointRegistry` — explicit endpoint binding and capability resolution.
+- `CapabilityCoordinator` — resource-domain conflict and concurrency control.
+- `SenseOutcome` / `SenseFailure` — stable failure categories.
+- `SemanticSenseWorkflows` — orchestration for transcription, vision, TTS, and combined
+  operations.
 
 ```text
-Agent workflow or application
-        │
-        ▼
-SensesDevice (pure Kotlin contract)
-        │
-        ├── physical Halo ──► HaloSensesDevice (Android BLE)
-        │                        │
-        │                        ▼
-        │                   HaloConnectionManager
-        │                        │
-        │                        ▼
-        │                   graphic-engine-halo
-        │                   (HaloHost, HaloSession, AndroidBleTransport)
-        │                        │
-        │                        ▼
-        │                   Halo Lua runtime and BLE firmware
-        │
-        └── simulator ──────► SimulatedSensesDevice (in-memory)
-                                 │
-                                 ▼
-                            Scenario fixtures
-                            (deterministic, virtual time)
+Application / agent tools
+          │
+          ▼
+SenseCapabilityRoutes (/v1/sense/*)
+          │
+          ▼
+SemanticSenseWorkflows + SenseEndpointRegistry
+          │
+    ┌─────┼──────────────┬────────────┐
+    ▼     ▼              ▼            ▼
+  Phone  Physical Halo  Chat       Simulator
 ```
-
-`SensesDevice` is a pure Kotlin interface with no Android, BLE, Ktor, Node, Python, firmware, or model types. Implementations are provided by a concrete backend. The same contract powers contract tests, adapter tests, workflow tests, and the debug UI.
-
-### Error model
-
-All failures surface as `SensesError`, a sealed `RuntimeException` with a `Category` discriminant (`Unavailable`, `Disconnected`, `Timeout`, `Cancelled`, `Rejected`, `LimitExceeded`, `Protocol`, `PermissionDenied`, `ModelUnavailable`, `Internal`). Callers switch on the category to decide retry, user feedback, or escalation.
 
 ## Modules
 
-| Module | Type | Role |
-|--------|------|------|
-| `core` | Kotlin/JVM | `SensesDevice` interface, DTOs, `SensesError`, `InputEvent` hierarchy. No Android or BLE dependencies. |
-| `halo` | Kotlin/JVM | Halo-specific protocol bridges between `core` and the `graphic-engine-halo` engine abstractions. |
-| `android` | Android library | Physical Halo BLE adapter: `HaloSensesDevice`, `HaloConnectionManager`, `SensesDeviceFactory`, and audio helpers (`PcmToWav`, `WavReader`). |
-| `simulator` | Kotlin/JVM | Deterministic `SimulatedSensesDevice`, `SimulatedHaloBleTransport`, `Scenario` scripts, `ScenarioFixtures`, and `TimeSource` for virtual-time tests. |
+| Module | Role |
+|---|---|
+| `core` | Pure Kotlin contracts, profiles, failures, coordination, runtime lifecycle, and WAV helpers |
+| `halo` | `PhysicalHaloEndpoint` backed by `halo-engine` transport/session abstractions |
+| `simulator` | Deterministic `SimulatedHaloEndpoint`, scripted scenarios, virtual time, and test fixtures |
+| `routes` | Authenticated Ktor routes for the generic `/v1/sense/*` API |
+| `orchestration` | Semantic workflows and multi-modal operation composition |
 
-The `graphic-engine-halo` composite build is included via `settings.gradle.kts` and provides `halo.engine:kotlin` and `halo.engine:android` through dependency substitution.
+The `halo-engine` composite build is included by `settings.gradle.kts` and
+can be overridden with `-PhaloEngineDir=<path>`.
 
 ## Quick start
 
-### Prerequisites
+Prerequisites: JDK 17 and the sibling `halo-engine` checkout. The JVM modules
+build without an Android SDK.
 
-- JDK 17
-- Android SDK (for the `android` module)
-- `graphic-engine-halo` as a sibling directory (or override with `-PhaloEngineDir=<path>`)
-
-### Build
-
-```sh
-gradle :core:test
-gradle :simulator:test
-gradle :halo:build
-gradle :android:assembleDebug
+```powershell
+.\gradlew.bat :core:test
+.\gradlew.bat :simulator:test
+.\gradlew.bat :routes:test
+.\gradlew.bat :halo:build
 ```
 
-Kotlin/JVM modules (`core`, `halo`, `simulator`) build and test without an Android SDK. The `android` library target requires `compileSdk = 36` and `minSdk = 33`.
+The literal `gradle` command requires a system Gradle installation matching the
+wrapper version; using the wrapper avoids version drift.
 
-### Run tests
+## Route surface
 
-```sh
-gradle :core:test
-gradle :simulator:test
-gradle :android:testDebugUnitTest
-```
+`routes` exposes an authenticated, generic capability API:
 
-### Use the simulator
+- `GET /v1/sense/capabilities`
+- `POST /v1/sense/listen`
+- `POST /v1/sense/look`
+- `POST /v1/sense/wait`
+- `POST /v1/sense/speak`
+- `POST /v1/sense/say`
+- `POST /v1/sense/present`
+- `POST /v1/sense/status`
 
-```kotlin
-val device = SimulatedSensesDevice(ScenarioFixtures.happyPath())
-device.connect(null)
-val audio = device.captureAudio(AudioCaptureRequest(maxDurationMillis = 1000, maxBytes = 64_000))
-val image = device.captureImage(ImageCaptureRequest(resolution = 256, qualityIndex = 4, maxBytes = 64_000))
-val battery = device.battery()
-device.disconnect()
-```
+Routes return typed failure categories and provenance. Invalid requests and internal
+failures use generic public messages rather than echoing exception details. Diagnostic
+media callbacks contain bounded media artifacts and metadata only; transcripts,
+image descriptions, and TTS text are not copied into provenance.
 
-### Use the physical Halo backend
+## Endpoint behavior
 
-```kotlin
-val backend = DefaultSensesDeviceFactory.create(context, scope)
-val device = backend.device
-device.connect(DeviceTarget(name = "Halo", address = "AA:BB:CC:DD:EE:FF"))
-device.present(DevicePresentation(format = PresentationFormat.HSD, payload = sceneJson.toByteArray()))
-device.disconnect()
-backend.close()
-```
+Every endpoint advertises truthful capabilities and limits through `SenseProfile`.
+Physical Halo operations use `HaloSession.collect` or `HaloSession.requestResponse`;
+hand-rolled streaming loops are not part of the endpoint implementation. Phone image
+capture is fixed at 640×640 JPEG for the current firmware profile. Microphone PCM is
+wrapped as 16 kHz mono 16-bit WAV. Speaker writes are receiver-paced.
 
-## Capabilities
-
-| Capability | `SensesDevice` method | Halo backend |
-|------------|----------------------|--------------|
-| Microphone capture | `captureAudio` | `HaloSession.collect` over BLE, PCM 16 kHz mono, WAV-wrapped |
-| Photo capture | `captureImage` | `HaloSession.collect` over BLE, JPEG at 640×640 |
-| Speaker playback | `playAudio` | `AndroidBleTransport.sendAudioFrame` with receiver-paced pacing |
-| Display presentation | `present` / `clearDisplay` | `HaloHost.showScene` (HSD); HRP and Lua formats are defined but not yet wired |
-| Input events | `awaitInput` / `events` | Button and tap notifications from the Halo firmware |
-| Battery | `battery` | `HaloSession.requestResponse` over the device-status protocol |
-| Text-to-speech | `HaloConnectionManager.speak` | Android TTS synthesized to WAV, then streamed as speaker audio |
-
-## Simulator scenarios
-
-`ScenarioFixtures` provides deterministic scripts for common test paths:
-
-| Fixture | Demonstrates |
-|---------|-------------|
-| `happyPath()` | Fully-featured device, connected immediately |
-| `slowConnection(delayMillis)` | Connection takes time to become ready |
-| `disconnectDuringOperation(afterMillis)` | Device disconnects mid-operation |
-| `oversizedImage(resolution, maxBytes)` | Capture exceeds the request byte limit |
-| `deviceError()` | Capture rejects with a simulated subsystem failure |
-| `tapAfter(delayMillis, source, gesture)` | A single input event is delivered after a delay |
-| `disconnectDuringAudio(...)` | Device disconnects while audio capture is in progress |
-| `unsupportedFeatures(features)` | A capability is rejected because it is not in `supportedFeatures` |
-| `missingFinalAudio()` | Audio stream ends without a final frame |
-| `micSpeakerConflict()` | Playback rejects while capture is active |
-| `dropFirstPackets(count)` | The first host packets are silently dropped |
-| `delayedPackets(delayMillis)` | Every host packet is delayed |
-| `packetRejection(error)` | The transport rejects the next host packet |
-
-For virtual-time tests, pass a `CoroutineScope` backed by a `StandardTestDispatcher` and a `VirtualTimeSource`.
+The simulator is deterministic and intended for unit, contract, workflow, and UI
+regression tests. It is not a substitute for physical-Halo validation.
 
 ## Repository structure
 
 ```text
-core/          SensesDevice contract, DTOs, SensesError, InputEvent
-halo/          Halo-specific protocol bridges to graphic-engine-halo
-android/       Physical Halo BLE adapter, SensesDeviceFactory, audio helpers
-simulator/     Deterministic SimulatedSensesDevice, SimulatedHaloBleTransport, Scenario, fixtures
+core/          pure Kotlin contracts and helpers
+halo/          PhysicalHaloEndpoint
+simulator/     deterministic endpoint and test fixtures
+routes/        authenticated Ktor route adapters
+orchestration/ semantic workflows
 gradle/        Gradle wrapper
+LICENSE
+THIRD_PARTY_NOTICES.md
 ```
-
-## Tech stack
-
-- **Kotlin 2.3.0**, **AGP 8.13.0**, **Java 17**
-- **kotlinx-coroutines** — suspendible capture, playback, and input flows
-- **kotlinx-serialization** — JSON for presentation payloads
-- **graphic-engine-halo** (composite build) — `HaloHost`, `HaloSession`, `AndroidBleTransport`, `HsdHrpCompiler`
 
 ## Scope and limitations
 
-- HRP and Lua presentation formats are defined in `PresentationFormat` but the Halo backend currently implements only HSD. HRP and Lua throw `SensesError.Unavailable`.
-- Camera capture is fixed at 640×640 JPEG; pan and raw capture are rejected by the current firmware profile.
-- The simulator is Kotlin/JVM only; it is not a Python emulator and does not render scenes.
-- Physical-Halo validation, throughput measurements, and Android instrumented tests are outstanding.
-
-## References
-
-- [Brilliant Labs Halo](https://brilliant.xyz/products/halo)
-- [Halo Hardware Manual](https://docs.brilliant.xyz/halo/hardware/)
-- [Halo Bluetooth specifications](https://docs.brilliant.xyz/halo/halo-sdk-bluetooth-specs/)
-- [graphic-engine-halo](../graphic-engine-halo) — HSD compiler, HRP protocol, and BLE transport
-- [dsh-android](../dsh-android) — Android app that wires `agent-senses` to the dsh agent loop
+- The `core` module has no Android, BLE, Ktor, Node, Python, Gemma, or model imports.
+- Physical-Halo throughput, callback behavior, and Android instrumented validation are
+  still required before claiming hardware production readiness.
+- Simulator classes must not be placed on a production release classpath; the
+  dsh-android integration keeps the simulator dependency debug-only.
+- The engine and product templates are deliberately outside this repository.
 
 ## License
 
-MIT. This is an independent research project and is not affiliated with Brilliant Labs or Garmin.
+MIT. This is an independent research project and is not affiliated with Brilliant
+Labs or any device manufacturer. See `THIRD_PARTY_NOTICES.md` for dependency guidance.

@@ -48,5 +48,13 @@ app/src/main/assets/nodejs-project/node_modules/
 .DS_Store
 Thumbs.db
 
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+
 # Logs
 *.log

@@ -5,11 +5,10 @@ import com.nyooran.agent.senses.BatteryState
 import com.nyooran.agent.senses.DeviceFeature
 import com.nyooran.agent.senses.DeviceTarget
 import com.nyooran.agent.senses.ImageFormat
-import com.nyooran.agent.senses.InputEvent
 import com.nyooran.agent.senses.SensesError
 
 /**
- * A deterministic, replayable script for [SimulatedSensesDevice].
+ * A deterministic, replayable script for the simulated Halo transport.
  *
  * Every field has a safe default, so a scenario can be as simple as
  * `Scenario()` (the happy path) or as specific as a multi-step failure test.
@@ -31,15 +30,9 @@ data class Scenario(
     val imageFixture: ByteArray = ByteArray(0),
     val imageError: SensesError? = null,
     val playAudioRejection: SensesError? = null,
-    val scheduledEvents: List<ScheduledEvent> = emptyList(),
     val maxDataPayload: Int = 512,
     val maxLuaPayload: Int = 512,
     val packetDelayMillis: Long = 0,
     val droppedPacketCount: Int = 0,
     val packetRejection: SensesError? = null,
-) {
-    data class ScheduledEvent(
-        val delayMillis: Long,
-        val event: InputEvent,
-    )
-}
+)
