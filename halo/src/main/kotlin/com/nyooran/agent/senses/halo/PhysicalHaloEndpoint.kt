@@ -656,7 +656,7 @@ class PhysicalHaloEndpoint(
     }
 
     private fun effectiveTimeout(requested: Long, default: Long): Long =
-        if (requested > 0) requested else default
+        minOf(if (requested > 0) requested else default, config.operationTimeout.inWholeMilliseconds)
 
     /** Get the current framebuffer snapshot (for test assertions). */
     fun framebufferSnapshot(): IntArray = renderer.snapshot()

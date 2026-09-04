@@ -8,7 +8,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
 
 /**
- * Production semantic sense workflow orchestrator (AgentSensesService).
+ * Production semantic sense workflow orchestrator.
  *
  * This is the app-facing orchestration layer defined in
  * AGENT_SENSES_ARCHITECTURE.md (AD-6). It composes raw endpoint

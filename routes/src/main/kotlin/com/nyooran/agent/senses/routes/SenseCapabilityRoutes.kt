@@ -92,7 +92,6 @@ fun Route.senseCapabilityRoutes(
                                 operationId = r.rawAudioProvenance.operationId,
                                 provenance = mapOf(
                                     "capability" to "AudioInput",
-                                    "transcript" to r.transcript,
                                     "duration_millis" to (r.rawAudioProvenance.mediaFormat?.durationMillis ?: 0L).toString(),
                                 ),
                             )
@@ -104,14 +103,14 @@ fun Route.senseCapabilityRoutes(
                     when (e) {
                         is SensesError -> respondError(call, e)
                         is CancellationException -> throw e
-                        else -> respondError(call, SensesError.Internal(e.message ?: "listen failed"))
+                        else -> respondError(call, SensesError.Internal("listen failed"))
                     }
                 },
             )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            respondError(call, SensesError.Internal(e.message ?: "listen failed"))
+            respondError(call, SensesError.Internal("listen failed"))
         }
     }
 
@@ -158,7 +157,6 @@ fun Route.senseCapabilityRoutes(
                                 operationId = r.rawImageProvenance.operationId,
                                 provenance = mapOf(
                                     "capability" to "ImageInput",
-                                    "description" to r.description,
                                 ),
                             )
                         )
@@ -169,14 +167,14 @@ fun Route.senseCapabilityRoutes(
                     when (e) {
                         is SensesError -> respondError(call, e)
                         is CancellationException -> throw e
-                        else -> respondError(call, SensesError.Internal(e.message ?: "look failed"))
+                        else -> respondError(call, SensesError.Internal("look failed"))
                     }
                 },
             )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            respondError(call, SensesError.Internal(e.message ?: "look failed"))
+            respondError(call, SensesError.Internal("look failed"))
         }
     }
 
@@ -238,7 +236,7 @@ fun Route.senseCapabilityRoutes(
         } catch (e: SensesError) {
             respondError(call, e)
         } catch (e: Exception) {
-            respondError(call, SensesError.Internal(e.message ?: "wait failed"))
+            respondError(call, SensesError.Internal("wait failed"))
         }
     }
 
@@ -296,7 +294,7 @@ fun Route.senseCapabilityRoutes(
         } catch (e: SensesError) {
             respondError(call, e)
         } catch (e: Exception) {
-            respondError(call, SensesError.Internal(e.message ?: "speak failed"))
+            respondError(call, SensesError.Internal("speak failed"))
         }
     }
 
@@ -331,7 +329,6 @@ fun Route.senseCapabilityRoutes(
                                     "source" to "tts",
                                     "sample_rate" to (r.format?.sampleRate ?: 16000).toString(),
                                     "encoding" to (r.format?.encoding ?: "wav"),
-                                    "text" to req.text,
                                 ),
                             )
                         )
@@ -344,14 +341,14 @@ fun Route.senseCapabilityRoutes(
                 onFailure = { e ->
                     when (e) {
                         is SensesError -> respondError(call, e)
-                        else -> respondError(call, SensesError.Internal(e.message ?: "say failed"))
+                        else -> respondError(call, SensesError.Internal("say failed"))
                     }
                 },
             )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            respondError(call, SensesError.Internal(e.message ?: "say failed"))
+            respondError(call, SensesError.Internal("say failed"))
         }
     }
 
@@ -413,7 +410,7 @@ fun Route.senseCapabilityRoutes(
         } catch (e: SensesError) {
             respondError(call, e)
         } catch (e: Exception) {
-            respondError(call, SensesError.Internal(e.message ?: "present failed"))
+            respondError(call, SensesError.Internal("present failed"))
         }
     }
 
@@ -437,7 +434,7 @@ fun Route.senseCapabilityRoutes(
         } catch (e: SensesError) {
             respondError(call, e)
         } catch (e: Exception) {
-            respondError(call, SensesError.Internal(e.message ?: "status failed"))
+            respondError(call, SensesError.Internal("status failed"))
         }
     }
 }
@@ -457,7 +454,7 @@ private suspend inline fun <reified T> safeReceive(call: ApplicationCall, json: 
     return try {
         json.decodeFromString(call.receiveText())
     } catch (e: Exception) {
-        call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = "invalid request: ${e.message}"))
+        call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = "invalid request"))
         null
     }
 }
@@ -536,7 +533,7 @@ private suspend fun respondError(call: ApplicationCall, error: SenseFailure) {
         FailureCategory.INTERNAL -> HttpStatusCode.InternalServerError
     }
     call.respond(status, ErrorResponse(
-        error = error.message,
+        error = if (error.category == FailureCategory.INTERNAL) "internal error" else error.message,
         category = error.category.name,
         endpoint_id = error.endpointId?.value,
     ))
@@ -556,7 +553,7 @@ private suspend fun respondError(call: ApplicationCall, error: SensesError) {
         is SensesError.Internal -> HttpStatusCode.InternalServerError
     }
     call.respond(status, ErrorResponse(
-        error = error.message ?: "unknown error",
+        error = if (error is SensesError.Internal) "internal error" else error.message ?: "unknown error",
         category = error.category.name,
     ))
 }

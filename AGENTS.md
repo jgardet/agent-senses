@@ -30,9 +30,9 @@ The Phase 1 `SensesDevice` interface has been removed; all endpoints implement `
 
 ```sh
 # Kotlin/JVM modules (no Android SDK required)
-gradle :core:test
-gradle :simulator:test
-gradle :halo:build
+.\gradlew.bat :core:test
+.\gradlew.bat :simulator:test
+.\gradlew.bat :halo:build
 ```
 
 The `graphic-engine-halo` composite build is included automatically via `settings.gradle.kts`. Override its location with `-PhaloEngineDir=<path>`.

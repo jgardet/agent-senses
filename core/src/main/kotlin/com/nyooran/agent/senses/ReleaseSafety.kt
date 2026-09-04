@@ -27,8 +27,8 @@ object ReleaseSafetyCheck {
     private val simulatorClassNames = listOf(
         "com.nyooran.agent.senses.simulator.SimulatedHaloEndpoint",
         "com.nyooran.agent.senses.simulator.FixtureEndpoint",
-        "com.nyooran.agent.senses.simulator.ChatEndpoint",
-        "com.nyooran.agent.senses.simulator.SemanticSenseWorkflows",
+        "com.nyooran.agent.senses.ChatEndpoint",
+        "com.nyooran.agent.senses.orchestration.SemanticSenseWorkflows",
     )
 
     /**
