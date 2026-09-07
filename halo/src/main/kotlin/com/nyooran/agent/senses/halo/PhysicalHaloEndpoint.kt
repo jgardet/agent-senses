@@ -9,6 +9,7 @@ import halo.engine.HaloSession
 import halo.engine.HaloMessage
 import halo.engine.HaloTransportException
 import halo.engine.HsdHrpCompiler
+import halo.engine.HsdText
 import halo.engine.HaloBleTransport
 import halo.engine.SpritePacker
 import halo.engine.StubSpritePacker
@@ -42,10 +43,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 
 /**
  * Phase 3 P3-03: Physical Halo sense endpoint.
@@ -504,22 +501,8 @@ class PhysicalHaloEndpoint(
         }
     }
 
-    private fun textToHsd(text: String): ByteArray {
-        val document = buildJsonObject {
-            put("scene", buildJsonObject {
-                put("children", buildJsonArray {
-                    add(buildJsonObject {
-                        put("type", "text")
-                        put("x", 0)
-                        put("y", 0)
-                        put("text", text)
-                        put("color", "#FFFFFF")
-                    })
-                })
-            })
-        }
-        return json.encodeToString(JsonObject.serializer(), document).toByteArray(Charsets.UTF_8)
-    }
+    private fun textToHsd(text: String): ByteArray =
+        json.encodeToString(JsonObject.serializer(), HsdText.document(text)).toByteArray(Charsets.UTF_8)
 
     override suspend fun textOutput(request: TextOutputRequest): TextOutputResult {
         throw SensesError.Unavailable("Halo endpoint does not support text output (use VisualOutput with HSD/HRP)")
