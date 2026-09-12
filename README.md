@@ -1,23 +1,34 @@
 # Agent Senses
 
-A device-neutral Kotlin sense layer for agent-driven interfaces. It defines typed
-contracts for audio input/output, image input, visual/text output, text input,
-interaction input, and status input across phone, physical Halo, chat, and simulator
-endpoints.
+A device-neutral Kotlin sense layer for agent-driven interfaces. It defines
+typed contracts for bidirectional, multimodal interaction between an agent and
+a user-facing sense endpoint — audio input/output, image input, visual/text
+output, text input, interaction input, and status input — across physical
+wearables, phones, chat surfaces, and deterministic simulators.
 
-## Current architecture
+The goal: an agent works in terms of **capabilities** (`sense_listen`,
+`sense_look`, `sense_speak`, `sense_present`, `sense_wait`, `sense_status`),
+not devices. A physical Halo, a phone, a chat window, and a simulator are
+different endpoints with different truthful capability profiles, and every
+observation and effect carries provenance.
 
-The Phase 1 `SensesDevice` contract has been removed. The current API is:
+## Highlights
 
-- `SenseProfile` — endpoint identity, backend kind, state, capabilities, limits, and
-  concurrency profile.
-- `SenseCapability` — the supported input/output capability set.
-- `SenseEndpoint` — typed request/result methods; every result carries `Provenance`.
-- `SenseEndpointRegistry` — explicit endpoint binding and capability resolution.
-- `CapabilityCoordinator` — resource-domain conflict and concurrency control.
-- `SenseOutcome` / `SenseFailure` — stable failure categories.
-- `SemanticSenseWorkflows` — orchestration for transcription, vision, TTS, and combined
-  operations.
+- **One contract, explicit profiles** — `SenseEndpoint` +
+  `SenseProfile` describe what an endpoint can actually do; capability
+  absence is a typed `Unavailable`, never a substituted value.
+- **Typed provenance everywhere** — every result records operationId,
+  endpointId, backendKind, origin, and transformations. Fixture data is
+  always identifiable as fixture data.
+- **Capability-based concurrency** — `CapabilityCoordinator` serializes
+  declared resource conflicts and permits independent operations to overlap.
+- **Deterministic simulator** — scripted scenarios, virtual time, and
+  fixtures for contract, workflow, and UI regression tests. No BLE in unit
+  tests.
+- **Shared contract suite** — `SenseEndpointContractTest` defines behavioral
+  contracts every endpoint implementation must pass.
+
+## Architecture
 
 ```text
 Application / agent tools
@@ -33,6 +44,23 @@ SemanticSenseWorkflows + SenseEndpointRegistry
   Phone  Physical Halo  Chat       Simulator
 ```
 
+The current API:
+
+- `SenseProfile` — endpoint identity, backend kind, state, capabilities,
+  limits, and concurrency profile.
+- `SenseCapability` — the supported input/output capability set.
+- `SenseEndpoint` — typed request/result methods; every result carries
+  `Provenance`.
+- `SenseEndpointRegistry` — explicit endpoint binding and capability
+  resolution.
+- `CapabilityCoordinator` — resource-domain conflict and concurrency control.
+- `SenseOutcome` / `SenseFailure` — stable failure categories.
+- `SemanticSenseWorkflows` — orchestration for transcription, vision, TTS,
+  and combined operations.
+
+See [`docs/AGENT_SENSES_ARCHITECTURE.md`](docs/AGENT_SENSES_ARCHITECTURE.md)
+for the design decisions behind these contracts.
+
 ## Modules
 
 | Module | Role |
@@ -43,52 +71,31 @@ SemanticSenseWorkflows + SenseEndpointRegistry
 | `routes` | Authenticated Ktor routes for the generic `/v1/sense/*` API |
 | `orchestration` | Semantic workflows and multi-modal operation composition |
 
-The `halo-engine` composite build is included by `settings.gradle.kts` and
-can be overridden with `-PhaloEngineDir=<path>`.
-
 ## Quick start
 
-Prerequisites: JDK 17 and the sibling `halo-engine` checkout. The JVM modules
-build without an Android SDK.
+**Prerequisites:** JDK 17. No Android SDK is required — every module is a
+plain Kotlin/JVM project.
 
-```powershell
-.\gradlew.bat :core:test
-.\gradlew.bat :simulator:test
-.\gradlew.bat :routes:test
-.\gradlew.bat :halo:build
+The `:halo` and `:simulator` modules consume `halo-engine` through a Gradle
+composite build. Clone it as a sibling of this repository:
+
+```text
+work/
+├── agent-senses/     ← this repository
+└── halo-engine/      ← required by :halo and :simulator
 ```
 
-The literal `gradle` command requires a system Gradle installation matching the
-wrapper version; using the wrapper avoids version drift.
+Or point the build at another location with `-PhaloEngineDir=<path>`.
 
-## Route surface
+```sh
+# JVM modules — no Android SDK needed
+./gradlew :core:test
+./gradlew :simulator:test
+./gradlew :routes:test
+./gradlew :halo:build
+```
 
-`routes` exposes an authenticated, generic capability API:
-
-- `GET /v1/sense/capabilities`
-- `POST /v1/sense/listen`
-- `POST /v1/sense/look`
-- `POST /v1/sense/wait`
-- `POST /v1/sense/speak`
-- `POST /v1/sense/say`
-- `POST /v1/sense/present`
-- `POST /v1/sense/status`
-
-Routes return typed failure categories and provenance. Invalid requests and internal
-failures use generic public messages rather than echoing exception details. Diagnostic
-media callbacks contain bounded media artifacts and metadata only; transcripts,
-image descriptions, and TTS text are not copied into provenance.
-
-## Endpoint behavior
-
-Every endpoint advertises truthful capabilities and limits through `SenseProfile`.
-Physical Halo operations use `HaloSession.collect` or `HaloSession.requestResponse`;
-hand-rolled streaming loops are not part of the endpoint implementation. Phone image
-capture is fixed at 640×640 JPEG for the current firmware profile. Microphone PCM is
-wrapped as 16 kHz mono 16-bit WAV. Speaker writes are receiver-paced.
-
-The simulator is deterministic and intended for unit, contract, workflow, and UI
-regression tests. It is not a substitute for physical-Halo validation.
+Windows: use `gradlew.bat`.
 
 ## Repository structure
 
@@ -98,21 +105,31 @@ halo/          PhysicalHaloEndpoint
 simulator/     deterministic endpoint and test fixtures
 routes/        authenticated Ktor route adapters
 orchestration/ semantic workflows
+docs/          architecture and developer documentation
 gradle/        Gradle wrapper
-LICENSE
+LICENSE        MIT
 THIRD_PARTY_NOTICES.md
 ```
 
 ## Scope and limitations
 
-- The `core` module has no Android, BLE, Ktor, Node, Python, Gemma, or model imports.
-- Physical-Halo throughput, callback behavior, and Android instrumented validation are
+- The `core` module has no Android, BLE, Ktor, Node, Python, or model imports.
+- Physical-Halo throughput, callback behavior, and instrumented validation are
   still required before claiming hardware production readiness.
-- Simulator classes must not be placed on a production release classpath; the
-  dsh-android integration keeps the simulator dependency debug-only.
-- The engine and product templates are deliberately outside this repository.
+- Simulator classes must not be placed on a production release classpath;
+  consuming applications keep the simulator dependency debug/test-only.
+- Device firmware, the `halo-engine` transport internals, and product
+  presentation templates are deliberately outside this repository.
+- Published as source (group `agent.senses`); no Maven artifact yet.
+
+## Contributing
+
+See [`docs/DEVELOPERS.md`](docs/DEVELOPERS.md) for the full developer guide: environment
+setup, the contract-test requirement for new endpoints, streaming-capability
+conventions, and the project rules enforced in review.
 
 ## License
 
-MIT. This is an independent research project and is not affiliated with Brilliant
-Labs or any device manufacturer. See `THIRD_PARTY_NOTICES.md` for dependency guidance.
+MIT — see `LICENSE`. This is an independent research project and is not
+affiliated with Brilliant Labs or any device manufacturer. See
+`THIRD_PARTY_NOTICES.md` for dependency guidance.

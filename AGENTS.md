@@ -21,7 +21,7 @@ The Phase 1 `SensesDevice` interface has been removed; all endpoints implement `
 ## How to work with it
 
 1. **Read the README** for the architecture diagram and module layout.
-2. **Read `AGENT_SENSES_ARCHITECTURE.md`** (in `dsh-android`) for the target architecture and architectural decisions.
+2. **Read `docs/AGENT_SENSES_ARCHITECTURE.md`** for the target architecture and architectural decisions.
 3. **Use the simulator** for contract, adapter, and workflow tests — never touch BLE in unit tests.
 4. **Use the `:halo` module** for the physical Halo backend; it depends on `halo-engine` for BLE transport and scene compilation.
 5. **Keep `core` pure** — no Android, BLE, Ktor, Node, Python, firmware, or model types in `core/`.
@@ -35,7 +35,7 @@ The Phase 1 `SensesDevice` interface has been removed; all endpoints implement `
 .\gradlew.bat :halo:build
 ```
 
-The `halo-engine` composite build is included automatically via `settings.gradle.kts`. Override its location with `-PhaloEngineDir=<path>`.
+The `halo-engine` composite build is included automatically via `settings.gradle.kts` and expects a sibling checkout at `../halo-engine` by default. Override its location with `-PhaloEngineDir=<path>`. See `docs/DEVELOPERS.md` for the full environment setup.
 
 ## Project rules
 
