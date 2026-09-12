@@ -134,6 +134,33 @@ class SemanticSenseWorkflows(
     }
 
     /**
+     * Wait for a user interaction on an endpoint.
+     * Returns the typed event (tap, button, approval, selection, text
+     * entry, or disconnection) with input provenance.
+     */
+    suspend fun waitForInteraction(
+        endpointId: EndpointId? = null,
+        request: InteractionInputRequest = InteractionInputRequest(),
+    ): Result<SemanticWaitResult> = cancellationAware {
+        val endpoint = resolve(endpointId, SenseCapability.InteractionInput)
+        withOperation(endpoint) {
+            val result = registry.coordinator.withCapability(endpoint, SenseCapability.InteractionInput) {
+                endpoint.interactionInput(request)
+            }
+            SemanticWaitResult(event = result.event, inputProvenance = result.provenance)
+        }
+    }
+
+    /**
+     * Resolve a single endpoint that supports all of [capabilities].
+     * Follows the same selection rules as [resolve]: an explicit
+     * [endpointId] is honored, otherwise exactly one eligible endpoint
+     * must exist or the call fails with [SensesError].
+     */
+    fun endpointFor(endpointId: EndpointId?, capabilities: Set<SenseCapability>): SenseEndpoint =
+        resolveBoth(endpointId, capabilities)
+
+    /**
      * Multi-modal turn: listen, look, and produce both transcript and
      * observation. Returns partial results when one modality fails.
      *

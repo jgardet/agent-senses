@@ -38,7 +38,10 @@ fun Route.senseCapabilityRoutes(
 
     get("/v1/sense/capabilities") {
         if (!checkAuth(call, authToken)) return@get
-        val profiles = registry.endpointProfiles.value.map { p ->
+        // endpointProfiles is refreshed only on bind/unbind, so read each
+        // endpoint's live profile — state changes after connect() must be
+        // reported truthfully (READY vs DISCONNECTED).
+        val profiles = registry.endpointProfiles.value.mapNotNull { registry.get(it.endpointId)?.profile }.map { p ->
             EndpointProfileDto(
                 endpoint_id = p.endpointId.value,
                 backend_name = p.backendName,

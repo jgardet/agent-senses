@@ -97,7 +97,7 @@ class SimulatedHaloEndpoint(
 
     private var operationCounter = 0
 
-    override val profile: SenseProfile = SenseProfile(
+    private val profileBase = SenseProfile(
         endpointId = endpointId,
         backendName = "Simulated Halo",
         backendKind = BackendKind.SIMULATOR,
@@ -129,6 +129,8 @@ class SimulatedHaloEndpoint(
         ),
         displayName = scenario.displayName,
     )
+
+    override val profile: SenseProfile get() = profileBase.copy(state = _state.value)
 
     override suspend fun connect() {
         if (scenario.connectionDelayMillis > 0) delay(scenario.connectionDelayMillis)

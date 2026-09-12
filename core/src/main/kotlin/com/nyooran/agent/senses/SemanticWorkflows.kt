@@ -112,4 +112,13 @@ data class SemanticPresentResult(
     val outputProvenance: Provenance,
 )
 
+/**
+ * Result of an interaction-wait workflow (block until user interaction
+ * or timeout on the selected endpoint).
+ */
+data class SemanticWaitResult(
+    val event: InteractionEvent,
+    val inputProvenance: Provenance,
+)
+
 

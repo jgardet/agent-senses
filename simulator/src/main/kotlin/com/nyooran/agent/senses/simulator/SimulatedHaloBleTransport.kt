@@ -1,5 +1,6 @@
 package com.nyooran.agent.senses.simulator
 
+import com.nyooran.agent.senses.BatteryState
 import com.nyooran.agent.senses.DeviceFeature
 import halo.engine.HaloBleTransport
 import halo.engine.HaloMessage
@@ -26,15 +27,31 @@ import kotlinx.coroutines.sync.withLock
  * This lets `HaloSession` and `PhysicalHaloEndpoint` tests run without Android
  * Bluetooth or a physical device by simulating the message stream, chunking,
  * and ACK behavior that the firmware would produce.
+ *
+ * Optional live-media hooks let a host app back the virtual device with real
+ * hardware (e.g. the phone microphone/camera/speaker) so the full
+ * `PhysicalHaloEndpoint` path can be exercised end-to-end:
+ * - [microphoneSource] is invoked after `MICROPHONE_START`; it streams PCM
+ *   chunks through its `emit` callback until it returns or the stream is
+ *   cancelled by `MICROPHONE_STOP`. Already-emitted chunks stay delivered.
+ * - [photoSource] is invoked on `CAPTURE_PHOTO` and returns the full JPEG.
+ * - [speakerSessionStart]/[speakerSessionEnd] bracket `SPEAKER_START`/`STOP`
+ *   and [speakerSink] receives each `sendAudioFrame` payload.
  */
 class SimulatedHaloBleTransport(
     private val scenario: Scenario = Scenario(),
     private val timeSource: TimeSource = WallClock,
     scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val microphoneSource: (suspend (emit: suspend (ByteArray) -> Unit) -> Unit)? = null,
+    private val photoSource: (suspend () -> ByteArray)? = null,
+    private val speakerSink: (suspend (ByteArray) -> Unit)? = null,
+    private val speakerSessionStart: (suspend (ByteArray) -> Unit)? = null,
+    private val speakerSessionEnd: (suspend () -> Unit)? = null,
 ) : HaloBleTransport {
 
     private val transportScope = CoroutineScope(scope.coroutineContext + SupervisorJob())
     private val lock = Mutex()
+    private val batteryOverride = AtomicReference<BatteryState?>(null)
 
     private val _messages = MutableSharedFlow<HaloMessage>(extraBufferCapacity = 128)
     override val messages = _messages.asSharedFlow()
@@ -88,11 +105,17 @@ class SimulatedHaloBleTransport(
         if (!connected.get()) return
         if (!applyReliability()) return
         when (code) {
-            HaloProtocol.MICROPHONE_START -> startStream(payload, chunkCode = HaloProtocol.AUDIO_CHUNK, finalCode = HaloProtocol.AUDIO_FINAL, fixture = audioFixture())
+            HaloProtocol.MICROPHONE_START -> startMicStream(payload)
             HaloProtocol.MICROPHONE_STOP -> stopActiveStream(HaloProtocol.AUDIO_FINAL)
-            HaloProtocol.CAPTURE_PHOTO -> startStream(payload, chunkCode = HaloProtocol.PHOTO_JPEG, finalCode = HaloProtocol.PHOTO_FINAL, fixture = imageFixture())
-            HaloProtocol.SPEAKER_START -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
-            HaloProtocol.SPEAKER_STOP -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
+            HaloProtocol.CAPTURE_PHOTO -> startPhotoStream(payload)
+            HaloProtocol.SPEAKER_START -> {
+                speakerSessionStart?.invoke(payload)
+                _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
+            }
+            HaloProtocol.SPEAKER_STOP -> {
+                speakerSessionEnd?.invoke()
+                _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
+            }
             HaloProtocol.DEVICE_STATUS -> _messages.tryEmit(HaloMessage(HaloProtocol.DEVICE_STATUS, batteryPayload()))
             HaloProtocol.HRP -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
             HaloProtocol.STATUS -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, payload))
@@ -111,6 +134,7 @@ class SimulatedHaloBleTransport(
         if (!applyReliability()) return
         _recordedAudioFrames.add(frame)
         _speakerAudio.write(frame)
+        speakerSink?.invoke(frame)
     }
 
     /** Cancel any pending scheduled events and release the transport scope. */
@@ -133,15 +157,88 @@ class SimulatedHaloBleTransport(
     /** Concatenated speaker audio bytes. */
     val speakerAudio: ByteArray get() = _speakerAudio.toByteArray()
 
+    // ------------------------------------------------------------------
+    // Device-initiated injection (taps, buttons, battery, disconnect)
+    // ------------------------------------------------------------------
+
+    /**
+     * Emit a device-to-host message as the firmware would (e.g. a tap event).
+     * Returns false when the transport is not connected — real hardware cannot
+     * report events while disconnected.
+     */
+    fun injectDeviceMessage(code: Int, payload: ByteArray = byteArrayOf()): Boolean {
+        if (!connected.get()) return false
+        return _messages.tryEmit(HaloMessage(code, payload))
+    }
+
+    /** Emit a temple-tap event. [gestureCode] follows the firmware encoding: 1 single, 2 double, 3 triple. */
+    fun injectTap(gestureCode: Int = 1): Boolean =
+        injectDeviceMessage(HaloProtocol.TAP, byteArrayOf(gestureCode.toByte()))
+
+    /** Emit a physical-button event. [gestureCode] follows the firmware encoding: 1 single, 2 double, 3 long. */
+    fun injectButton(gestureCode: Int = 1): Boolean =
+        injectDeviceMessage(HaloProtocol.BUTTON, byteArrayOf(gestureCode.toByte()))
+
+    /**
+     * Simulate the wearable disconnecting: active streams are cancelled and a
+     * disconnect event is emitted without tearing down the transport scope.
+     */
+    fun simulateDisconnect() {
+        connected.set(false)
+        _connectionEvents.tryEmit(false)
+        activeStream.getAndSet(null)?.cancel()
+        _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
+    }
+
+    /** Override the battery state reported by `DEVICE_STATUS` responses. */
+    fun setBattery(level: Int, voltage: Int, charging: Boolean) {
+        batteryOverride.set(BatteryState(level, voltage, charging))
+    }
+
+    private fun startMicStream(request: ByteArray) {
+        val source = microphoneSource
+        if (source == null) {
+            startStream(request, HaloProtocol.AUDIO_CHUNK, HaloProtocol.AUDIO_FINAL) { audioFixture() }
+            return
+        }
+        activeStream.getAndSet(null)?.cancel()
+        val job = transportScope.launch {
+            source.invoke { chunk ->
+                _messages.tryEmit(HaloMessage(HaloProtocol.AUDIO_CHUNK, chunk))
+            }
+            _messages.tryEmit(HaloMessage(HaloProtocol.AUDIO_FINAL, byteArrayOf()))
+        }
+        activeStream.set(job)
+    }
+
+    private fun startPhotoStream(request: ByteArray) {
+        val source = photoSource
+        if (source == null) {
+            startStream(request, HaloProtocol.PHOTO_JPEG, HaloProtocol.PHOTO_FINAL) { imageFixture() }
+            return
+        }
+        activeStream.getAndSet(null)?.cancel()
+        val job = transportScope.launch {
+            val chunks = source.invoke().toList().chunked(maxDataPayload).map { bytes ->
+                ByteArray(bytes.size) { bytes[it] }
+            }
+            for (chunk in chunks) {
+                _messages.tryEmit(HaloMessage(HaloProtocol.PHOTO_JPEG, chunk))
+            }
+            _messages.tryEmit(HaloMessage(HaloProtocol.PHOTO_FINAL, byteArrayOf()))
+        }
+        activeStream.set(job)
+    }
+
     private fun startStream(
         request: ByteArray,
         chunkCode: Int,
         finalCode: Int,
-        fixture: ByteArray,
+        fixture: suspend () -> ByteArray,
     ) {
         activeStream.getAndSet(null)?.cancel()
         val job = transportScope.launch {
-            val chunks = fixture.toList().chunked(maxDataPayload).map { bytes ->
+            val chunks = fixture().toList().chunked(maxDataPayload).map { bytes ->
                 ByteArray(bytes.size) { bytes[it] }
             }
             val chunkDelay = if (chunks.isNotEmpty()) scenario.audioDelayMillis / chunks.size else 0
@@ -193,7 +290,7 @@ class SimulatedHaloBleTransport(
     }
 
     private fun batteryPayload(): ByteArray {
-        val battery = scenario.battery
+        val battery = batteryOverride.get() ?: scenario.battery
         return byteArrayOf(
             (battery.level and 0xff).toByte(),
             ((battery.voltage ushr 8) and 0xff).toByte(),

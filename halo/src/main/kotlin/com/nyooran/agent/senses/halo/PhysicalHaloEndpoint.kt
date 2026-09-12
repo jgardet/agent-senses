@@ -105,7 +105,7 @@ class PhysicalHaloEndpoint(
 
     private fun nextOpId() = "halo-op-${++operationCounter}"
 
-    override val profile: SenseProfile = SenseProfile(
+    private val profileBase = SenseProfile(
         endpointId = config.endpointId,
         backendName = "Halo",
         backendKind = BackendKind.PHYSICAL,
@@ -137,6 +137,8 @@ class PhysicalHaloEndpoint(
         ),
         displayName = config.displayName,
     )
+
+    override val profile: SenseProfile get() = profileBase.copy(state = _state.value)
 
     override suspend fun connect() {
         if (_state.value == EndpointState.READY) return
