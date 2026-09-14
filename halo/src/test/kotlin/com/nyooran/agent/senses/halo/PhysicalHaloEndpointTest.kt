@@ -3,6 +3,7 @@ package com.nyooran.agent.senses.halo
 import com.nyooran.agent.senses.*
 import com.nyooran.agent.senses.simulator.Scenario
 import com.nyooran.agent.senses.simulator.SimulatedHaloBleTransport
+import halo.engine.HaloProtocol
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -173,5 +174,119 @@ class PhysicalHaloEndpointTest {
         assertTrue(result is ResolveResult.Resolved)
         assertEquals(BackendKind.PHYSICAL, result.endpoint.profile.backendKind)
         registry.unbindAll()
+    }
+
+    // ------------------------------------------------------------------ v3 runtime controls
+
+    private fun makeInstalledEndpoint(
+        scenario: Scenario = Scenario(),
+    ): Pair<PhysicalHaloEndpoint, SimulatedHaloBleTransport> {
+        val transport = SimulatedHaloBleTransport(scenario = scenario)
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                runtimeInstaller = { it.sendLua("require 'halo_engine'") },
+            ),
+        )
+        return ep to transport
+    }
+
+    @Test
+    fun connectCapturesRuntimeStatusAndSyncsTime() = runTest {
+        val (ep, transport) = makeInstalledEndpoint()
+        ep.connect()
+        assertEquals(EndpointState.READY, ep.state.value)
+        // STATUS from the install `require` is parsed into metadata.
+        assertEquals("26.013.1043", ep.firmwareVersion)
+        assertEquals("112233445566", ep.deviceEui)
+        assertTrue(ep.runtimeCapabilities!!.contains("sound"))
+        assertTrue(ep.runtimeCapabilities!!.contains("imu"))
+        // Time sync is pushed on connect.
+        assertTrue(transport.recordedControl.any { it.first == HaloProtocol.SET_TIME })
+        ep.close()
+    }
+
+    @Test
+    fun statusInputIncludesFirmwareExtras() = runTest {
+        val (ep, _) = makeInstalledEndpoint()
+        ep.connect()
+        val result = ep.statusInput(StatusInputRequest())
+        assertEquals("26.013.1043", result.status.extras["firmware"])
+        assertEquals("112233445566", result.status.extras["eui"])
+        ep.close()
+    }
+
+    @Test
+    fun playSoundSendsSoundPlay() = runTest {
+        val (ep, transport) = makeInstalledEndpoint()
+        ep.connect()
+        ep.playSound("pickup", volume = 60)
+        val cmd = transport.recordedControl.first { it.first == HaloProtocol.SOUND_PLAY }
+        // flags=0x01 (volume), volume=60, then "pickup"
+        assertEquals(0x01, cmd.second[0].toInt() and 0xFF)
+        assertEquals(60, cmd.second[1].toInt() and 0xFF)
+        assertEquals("pickup", String(cmd.second, 2, cmd.second.size - 2, Charsets.UTF_8))
+        ep.close()
+    }
+
+    @Test
+    fun systemPowerSaveSendsSystemMessage() = runTest {
+        val (ep, transport) = makeInstalledEndpoint()
+        ep.connect()
+        ep.setDisplayPowerSave(true)
+        ep.setCameraPowerSave(true)
+        val ops = transport.recordedControl.filter { it.first == HaloProtocol.SYSTEM }
+        assertEquals(HaloProtocol.SYS_DISPLAY_SLEEP, ops[0].second[0].toInt() and 0xFF)
+        assertEquals(HaloProtocol.SYS_CAMERA_POWER_SAVE, ops[1].second[0].toInt() and 0xFF)
+        assertEquals(1, ops[1].second[1].toInt() and 0xFF)
+        ep.close()
+    }
+
+    @Test
+    fun readImuParsesSnapshot() = runTest {
+        val (ep, _) = makeInstalledEndpoint()
+        ep.connect()
+        val imu = ep.readImu()
+        assertEquals(0.10f, imu.pitchDegrees!!, 0.001f)
+        assertEquals(-0.20f, imu.rollDegrees!!, 0.001f)
+        assertEquals(48.0f, imu.compassZ!!, 0.001f)
+        assertEquals(1001.0f, imu.accelZ!!, 0.001f)
+        ep.close()
+    }
+
+    @Test
+    fun configureTapSendsTapConfig() = runTest {
+        val (ep, transport) = makeInstalledEndpoint()
+        ep.connect()
+        ep.configureTap(mode = "sensitive", threshold = 12)
+        val cmd = transport.recordedControl.first { it.first == HaloProtocol.TAP_CONFIG }
+        assertEquals(0x01 or 0x04, cmd.second[0].toInt() and 0xFF)
+        ep.close()
+    }
+
+    @Test
+    fun audioInputRejectsLc3Encoder() = runTest {
+        val ep = makeEndpoint()
+        ep.connect()
+        assertFailsWith<SensesError.Rejected> {
+            ep.audioInput(AudioInputRequest(
+                maxDurationMillis = 100,
+                maxBytes = 65536,
+                deviceOptions = mapOf("encoder" to "lc3"),
+            ))
+        }
+    }
+
+    @Test
+    fun audioInputSupports8BitPcm() = runTest {
+        val (ep, _) = makeInstalledEndpoint()
+        ep.connect()
+        val result = ep.audioInput(AudioInputRequest(
+            maxDurationMillis = 100,
+            maxBytes = 65536,
+            deviceOptions = mapOf("bitDepth" to 8),
+        ))
+        assertEquals(8, result.format.bitDepth)
+        ep.close()
     }
 }

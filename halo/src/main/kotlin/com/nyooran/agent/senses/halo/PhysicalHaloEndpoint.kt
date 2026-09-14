@@ -3,6 +3,8 @@ package com.nyooran.agent.senses.halo
 import com.nyooran.agent.senses.*
 import com.nyooran.agent.senses.audio.PcmToWav
 import com.nyooran.agent.senses.audio.WavReader
+import halo.engine.HaloCommands
+import halo.engine.HaloDeviceException
 import halo.engine.HaloLimitException
 import halo.engine.HaloProtocol
 import halo.engine.HaloSession
@@ -16,12 +18,14 @@ import halo.engine.StubSpritePacker
 import halo.engine.display.HrpFailure
 import halo.engine.display.HrpRenderer
 import java.io.ByteArrayInputStream
+import java.util.TimeZone
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -82,6 +86,8 @@ class PhysicalHaloEndpoint(
         val onInteraction: suspend (InteractionEvent) -> Unit = { _ -> },
         val audioFrameMillis: Int = 10,
         val speakerVolume: Int = 80,
+        /** Push the host clock/timezone to `frame.time` after the runtime installs. */
+        val syncTimeOnConnect: Boolean = true,
     )
 
     private val session = HaloSession(transport)
@@ -99,6 +105,21 @@ class PhysicalHaloEndpoint(
     private val interactionQueue = ConcurrentLinkedQueue<InteractionEvent>()
     private val _recordedInteractions = mutableListOf<InteractionEvent>()
     val recordedInteractions: List<InteractionEvent> get() = _recordedInteractions.toList()
+
+    /**
+     * Capability tokens parsed from the runtime STATUS message
+     * (`HRP1;primitives,...;fw=..;eui=..`). Null until the runtime reports in.
+     */
+    var runtimeCapabilities: Set<String>? = null
+        private set
+
+    /** Firmware version reported by the runtime (`frame.FIRMWARE_VERSION`). */
+    var firmwareVersion: String? = null
+        private set
+
+    /** Device EUI reported by the runtime (`frame.get_eui()`). */
+    var deviceEui: String? = null
+        private set
 
     private val _recordedHrp = mutableListOf<ByteArray>()
     val recordedHrp: List<ByteArray> get() = _recordedHrp.toList()
@@ -149,7 +170,37 @@ class PhysicalHaloEndpoint(
             transport.connect()
         }
 
+        // Subscribe for the runtime's boot STATUS before installing so the
+        // announcement emitted during `require` is not missed. The install
+        // itself can take seconds on real hardware, so this collector is
+        // always live by the time the runtime announces itself.
+        val statusWait = scope.async {
+            transport.messages.first { msg ->
+                msg.code == HaloProtocol.STATUS &&
+                    msg.payload.size >= 3 &&
+                    msg.payload[0] == 'H'.code.toByte() &&
+                    msg.payload[1] == 'R'.code.toByte() &&
+                    msg.payload[2] == 'P'.code.toByte()
+            }
+        }
+
         config.runtimeInstaller(transport)
+
+        // Capture negotiated capabilities and firmware metadata before
+        // reporting READY; a runtime that never announces just times out.
+        runCatching {
+            withTimeout(2_000) { parseRuntimeStatus(statusWait.await().payload) }
+        }
+        statusWait.cancel()
+
+        if (config.syncTimeOnConnect) {
+            runCatching {
+                transport.sendMessage(
+                    HaloProtocol.SET_TIME,
+                    HaloCommands.setTime(System.currentTimeMillis() / 1000, currentZoneOffset()),
+                )
+            }
+        }
 
         connectionJob = scope.launch {
             transport.connectionEvents.first { connected -> !connected }
@@ -189,10 +240,31 @@ class PhysicalHaloEndpoint(
         val timeout = effectiveTimeout(request.timeoutMillis, request.maxDurationMillis + 2000)
         val maxBytes = minOf(request.maxBytes.toLong(), config.maxAudioBytes)
 
-        val startPayload = byteArrayOf(
-            (request.gain + 10).toByte(),
-            if (request.aec) 1.toByte() else 0.toByte(),
-            if (request.voice) 1.toByte() else 0.toByte(),
+        // Optional capture overrides; LC3 needs a host-side decoder we don't ship.
+        val encoder = (request.deviceOptions["encoder"] as? String) ?: "pcm"
+        if (!encoder.equals("pcm", ignoreCase = true)) {
+            throw SensesError.Rejected("Halo mic encoder '$encoder' is not supported by the host (only pcm)")
+        }
+        val sampleRate = (request.deviceOptions["sampleRate"] as? Int)
+            ?: config.audioFormat.sampleRate
+        val bitDepth = (request.deviceOptions["bitDepth"] as? Int)
+            ?: config.audioFormat.bitDepth
+        val channels = (request.deviceOptions["channels"] as? Int)
+            ?: config.audioFormat.channels
+        val format = config.audioFormat.copy(
+            sampleRate = sampleRate,
+            bitDepth = bitDepth,
+            channels = channels,
+        )
+
+        val startPayload = HaloCommands.microphoneStart(
+            gain = request.gain,
+            aec = request.aec,
+            voice = request.voice,
+            encoder = "pcm",
+            sampleRate = sampleRate,
+            bitDepth = bitDepth,
+            channels = channels,
         )
 
         val pcm = try {
@@ -208,6 +280,8 @@ class PhysicalHaloEndpoint(
             )
         } catch (e: HaloLimitException) {
             throw SensesError.LimitExceeded(e.message ?: "audio limit exceeded")
+        } catch (e: HaloDeviceException) {
+            throw SensesError.Protocol("device error: ${e.message}")
         } catch (e: HaloTransportException) {
             _state.value = EndpointState.DISCONNECTED
             throw SensesError.Disconnected(e.message ?: "transport disconnected")
@@ -217,18 +291,18 @@ class PhysicalHaloEndpoint(
 
         val wav = PcmToWav.fromPcm16(
             pcm,
-            config.audioFormat.sampleRate,
-            config.audioFormat.channels,
-            config.audioFormat.bitDepth,
+            format.sampleRate,
+            format.channels,
+            format.bitDepth,
         )
         val durationMillis = if (pcm.isEmpty()) 0L else {
-            pcm.size * 1000L / (config.audioFormat.sampleRate * config.audioFormat.channels * (config.audioFormat.bitDepth / 8))
+            pcm.size * 1000L / (format.sampleRate * format.channels * (format.bitDepth / 8))
         }
 
         val completedAt = System.currentTimeMillis()
         return AudioInputResult(
             audio = wav,
-            format = config.audioFormat,
+            format = format,
             durationMillis = durationMillis,
             provenance = Provenance(
                 operationId = opId,
@@ -238,11 +312,11 @@ class PhysicalHaloEndpoint(
                 capability = SenseCapability.AudioInput,
                 origin = ResultOrigin.MICROPHONE,
                 mediaFormat = MediaFormat(
-                    encoding = config.audioFormat.encoding,
-                    mime = config.audioFormat.mime,
+                    encoding = format.encoding,
+                    mime = format.mime,
                     durationMillis = durationMillis,
-                    sampleRate = config.audioFormat.sampleRate,
-                    channels = config.audioFormat.channels,
+                    sampleRate = format.sampleRate,
+                    channels = format.channels,
                 ),
                 startedAt = startedAt,
                 completedAt = completedAt,
@@ -260,14 +334,19 @@ class PhysicalHaloEndpoint(
         val targetBitDepth = 16
         val frameMillis = config.audioFrameMillis
         val volume = request.volume.coerceIn(0, 100)
+        val encoder = (request.deviceOptions["encoder"] as? String) ?: "pcm"
+        if (!encoder.equals("pcm", ignoreCase = true)) {
+            throw SensesError.Rejected("Halo speaker encoder '$encoder' is not supported by the host (only pcm)")
+        }
 
-        val startPayload = byteArrayOf(
-            0, // PCM encoder
-            (targetSampleRate shr 8).toByte(),
-            targetSampleRate.toByte(),
-            targetBitDepth.toByte(),
-            targetChannels.toByte(),
-            volume.toByte(),
+        val startPayload = HaloCommands.speakerStart(
+            encoder = "pcm",
+            sampleRate = targetSampleRate,
+            bitDepth = targetBitDepth,
+            channels = targetChannels,
+            volume = volume,
+            gain = (request.deviceOptions["gain"] as? Int) ?: 0,
+            budget = (request.deviceOptions["budget"] as? Int) ?: 0,
         )
 
         val timeout = effectiveTimeout(request.timeoutMillis, 30_000)
@@ -577,6 +656,8 @@ class PhysicalHaloEndpoint(
                 responseCode = HaloProtocol.DEVICE_STATUS,
                 timeout = timeout.milliseconds,
             )
+        } catch (e: HaloDeviceException) {
+            throw SensesError.Protocol("device error: ${e.message}")
         } catch (e: HaloTransportException) {
             _state.value = EndpointState.DISCONNECTED
             throw SensesError.Disconnected(e.message ?: "transport disconnected")
@@ -584,14 +665,20 @@ class PhysicalHaloEndpoint(
             throw SensesError.Timeout("status input timed out")
         }
 
+        val extras = buildMap {
+            firmwareVersion?.let { put("firmware", it) }
+            deviceEui?.let { put("eui", it) }
+            runtimeCapabilities?.let { put("runtime", it.sorted().joinToString(",")) }
+        }
         val status = if (payload.size >= 4) {
             EndpointStatus(
                 batteryLevel = payload[0].toInt() and 0xFF,
                 batteryVoltage = ((payload[1].toInt() and 0xFF) shl 8) or (payload[2].toInt() and 0xFF),
                 batteryCharging = (payload[3].toInt() and 0xFF) != 0,
+                extras = extras,
             )
         } else {
-            EndpointStatus()
+            EndpointStatus(extras = extras)
         }
 
         val completedAt = System.currentTimeMillis()
@@ -610,8 +697,199 @@ class PhysicalHaloEndpoint(
         )
     }
 
+    // ------------------------------------------------------------------
+    // Device-specific extensions (not part of the generic SenseEndpoint
+    // contract). These map to the `he_runtime.lua` v3 message codes; callers
+    // that go through the generic contract never see them.
+    // ------------------------------------------------------------------
+
+    /**
+     * Play a firmware-synthesized sound preset — cheap acknowledgement that
+     * needs no audio streaming. [name] must be one of the firmware presets
+     * (`pickup`, `laser`, `explosion`, `powerup`, `hit`, `jump`, `blip`).
+     */
+    suspend fun playSound(
+        name: String,
+        volume: Int? = null,
+        durationMillis: Int? = null,
+        seed: Int? = null,
+    ) {
+        ensureReady()
+        requireRuntimeCapability("sound")
+        sendDeviceMessage(
+            HaloProtocol.SOUND_PLAY,
+            HaloCommands.soundPlay(name, volume, durationMillis, seed),
+        )
+    }
+
+    /** Put the display panel in/out of power save without clearing content. */
+    suspend fun setDisplayPowerSave(enabled: Boolean) {
+        ensureReady()
+        requireRuntimeCapability("system")
+        sendDeviceMessage(
+            HaloProtocol.SYSTEM,
+            HaloCommands.system(
+                if (enabled) HaloProtocol.SYS_DISPLAY_SLEEP else HaloProtocol.SYS_DISPLAY_WAKE,
+            ),
+        )
+    }
+
+    /** Toggle the camera sensor's power-save mode. */
+    suspend fun setCameraPowerSave(enabled: Boolean) {
+        ensureReady()
+        requireRuntimeCapability("system")
+        sendDeviceMessage(
+            HaloProtocol.SYSTEM,
+            HaloCommands.systemFlag(HaloProtocol.SYS_CAMERA_POWER_SAVE, enabled),
+        )
+    }
+
+    /** Enter standby — BLE stays connected, the runtime resumes in place. */
+    suspend fun standby() {
+        ensureReady()
+        requireRuntimeCapability("system")
+        sendDeviceMessage(HaloProtocol.SYSTEM, HaloCommands.system(HaloProtocol.SYS_STANDBY))
+    }
+
+    /** Enter light sleep; [seconds] of 0 sleeps until an interrupt/wake source. */
+    suspend fun lightSleep(seconds: Int = 0) {
+        ensureReady()
+        requireRuntimeCapability("system")
+        sendDeviceMessage(HaloProtocol.SYSTEM, HaloCommands.systemSeconds(HaloProtocol.SYS_LIGHT_SLEEP, seconds))
+    }
+
+    /** Prevent the firmware's auto-sleep while connected. */
+    suspend fun stayAwake(enabled: Boolean) {
+        ensureReady()
+        requireRuntimeCapability("system")
+        sendDeviceMessage(HaloProtocol.SYSTEM, HaloCommands.systemFlag(HaloProtocol.SYS_STAY_AWAKE, enabled))
+    }
+
+    /** Ship mode — deepest sleep; the device only wakes on charge. */
+    suspend fun shipMode() {
+        ensureReady()
+        requireRuntimeCapability("system")
+        sendDeviceMessage(HaloProtocol.SYSTEM, HaloCommands.system(HaloProtocol.SYS_SHIP_MODE))
+    }
+
+    /** Enable/disable the charging circuit. */
+    suspend fun setCharging(enabled: Boolean) {
+        ensureReady()
+        requireRuntimeCapability("system")
+        sendDeviceMessage(HaloProtocol.SYSTEM, HaloCommands.systemFlag(HaloProtocol.SYS_CHARGE, enabled))
+    }
+
+    /** Deep sleep for [seconds]; 0 sleeps until wake source. */
+    suspend fun deepSleep(seconds: Int = 0) {
+        ensureReady()
+        requireRuntimeCapability("system")
+        sendDeviceMessage(HaloProtocol.SYSTEM, HaloCommands.systemSeconds(HaloProtocol.SYS_DEEP_SLEEP, seconds))
+    }
+
+    /**
+     * Push the host clock into `frame.time`. [zone] defaults to the host's
+     * current `±hh:mm` offset.
+     */
+    suspend fun syncTime(epochMillis: Long = System.currentTimeMillis(), zone: String? = null) {
+        ensureReady()
+        val zoneStr = zone ?: currentZoneOffset()
+        sendDeviceMessage(
+            HaloProtocol.SET_TIME,
+            HaloCommands.setTime(epochMillis / 1000, zoneStr),
+        )
+    }
+
+    /**
+     * Request an IMU snapshot: pitch/roll (radians), compass (µT), accel (mg).
+     * Fields are null when the runtime reports fewer values than expected.
+     */
+    suspend fun readImu(timeoutMillis: Long = 5_000): HaloImuSnapshot {
+        ensureReady()
+        requireRuntimeCapability("imu")
+        val payload = try {
+            session.requestResponse(
+                requestCode = HaloProtocol.IMU_READ,
+                requestPayload = byteArrayOf(),
+                responseCode = HaloProtocol.IMU,
+                timeout = timeoutMillis.milliseconds,
+            )
+        } catch (e: HaloDeviceException) {
+            throw SensesError.Protocol("device error: ${e.message}")
+        } catch (e: HaloTransportException) {
+            _state.value = EndpointState.DISCONNECTED
+            throw SensesError.Disconnected(e.message ?: "transport disconnected")
+        } catch (e: TimeoutCancellationException) {
+            throw SensesError.Timeout("IMU read timed out")
+        }
+        return HaloImuSnapshot.parse(payload.toString(Charsets.UTF_8))
+    }
+
+    /**
+     * Tune the hardware tap detector. Null fields are left unchanged.
+     * [mode] is `sensitive`, `normal`, or `robust`; [axis] is `x`, `y`, or `z`.
+     */
+    suspend fun configureTap(
+        mode: String? = null,
+        axis: String? = null,
+        threshold: Int? = null,
+        gestureDurationMillis: Int? = null,
+        waitForTimeout: Boolean? = null,
+    ) {
+        ensureReady()
+        requireRuntimeCapability("tap")
+        sendDeviceMessage(
+            HaloProtocol.TAP_CONFIG,
+            HaloCommands.tapConfig(mode, axis, threshold, gestureDurationMillis, waitForTimeout),
+        )
+    }
+
+    private suspend fun sendDeviceMessage(code: Int, payload: ByteArray) {
+        try {
+            transport.sendMessage(code, payload)
+        } catch (e: HaloTransportException) {
+            _state.value = EndpointState.DISCONNECTED
+            throw SensesError.Disconnected(e.message ?: "transport disconnected")
+        }
+    }
+
+    private fun currentZoneOffset(): String {
+        val offsetMillis = TimeZone.getDefault().getOffset(System.currentTimeMillis())
+        val sign = if (offsetMillis < 0) "-" else "+"
+        val total = kotlin.math.abs(offsetMillis) / 60_000
+        return "%s%02d:%02d".format(sign, total / 60, total % 60)
+    }
+
+    /**
+     * Parse the runtime STATUS payload (`HRP1;cap,cap;fw=x;eui=y`) into
+     * negotiated capabilities and device metadata. Non-string or legacy
+     * payloads are ignored.
+     */
+    private fun parseRuntimeStatus(payload: ByteArray) {
+        val text = runCatching { payload.toString(Charsets.UTF_8) }.getOrNull() ?: return
+        if (!text.startsWith("HRP")) return
+        val tokens = text.split(';').map { it.trim() }.filter { it.isNotEmpty() }
+        val caps = mutableSetOf<String>()
+        for (token in tokens.drop(1)) {
+            when {
+                token.startsWith("fw=") -> firmwareVersion = token.removePrefix("fw=")
+                token.startsWith("eui=") -> deviceEui = token.removePrefix("eui=")
+                else -> caps.addAll(token.split(',').map { it.trim() }.filter { it.isNotEmpty() })
+            }
+        }
+        caps.add(tokens[0])
+        runtimeCapabilities = caps
+    }
+
+    private fun requireRuntimeCapability(token: String) {
+        val caps = runtimeCapabilities ?: return
+        if (token !in caps) {
+            throw SensesError.Unavailable("Halo runtime does not advertise '$token'")
+        }
+    }
+
     private suspend fun handleMessage(msg: HaloMessage) {
         when (msg.code) {
+            HaloProtocol.STATUS -> parseRuntimeStatus(msg.payload)
             HaloProtocol.TAP -> {
                 val gesture = when (msg.payload.getOrElse(0) { 0 }.toInt()) {
                     1 -> TapGesture.SINGLE
@@ -649,5 +927,31 @@ class PhysicalHaloEndpoint(
     /** Close the endpoint scope. Call when the endpoint is unbound. */
     fun close() {
         scope.cancel()
+    }
+}
+
+/**
+ * IMU snapshot from `frame.imu` — pitch/roll in degrees, compass in µT,
+ * accelerometer in mg. Fields are null when the firmware reported no value.
+ */
+data class HaloImuSnapshot(
+    val pitchDegrees: Float?,
+    val rollDegrees: Float?,
+    val compassX: Float?,
+    val compassY: Float?,
+    val compassZ: Float?,
+    val accelX: Float?,
+    val accelY: Float?,
+    val accelZ: Float?,
+) {
+    companion object {
+        /** Parse `pitch;roll;cx;cy;cz;ax;ay;az` emitted by `he_runtime.lua`. */
+        fun parse(payload: String): HaloImuSnapshot {
+            val fields = payload.split(';').map { it.trim().toFloatOrNull() }
+            fun at(i: Int) = fields.getOrNull(i)
+            return HaloImuSnapshot(
+                at(0), at(1), at(2), at(3), at(4), at(5), at(6), at(7),
+            )
+        }
     }
 }

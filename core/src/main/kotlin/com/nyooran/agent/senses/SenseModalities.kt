@@ -110,6 +110,8 @@ data class AudioInputRequest(
     val aec: Boolean = true,
     val voice: Boolean = true,
     val maxBytes: Int,
+    /** Device-specific capture parameters (e.g. encoder, sampleRate, bitDepth for Halo). */
+    val deviceOptions: Map<String, Any> = emptyMap(),
     override val timeoutMillis: Long = maxDurationMillis + 2_000,
 ) : SenseRequest
 
@@ -118,6 +120,8 @@ data class AudioOutputRequest(
     val audio: ByteArray,
     val format: AudioFormat,
     val volume: Int = 80,
+    /** Device-specific playback parameters (e.g. gain, budget for Halo). */
+    val deviceOptions: Map<String, Any> = emptyMap(),
     override val timeoutMillis: Long = 30_000,
 ) : SenseRequest
 

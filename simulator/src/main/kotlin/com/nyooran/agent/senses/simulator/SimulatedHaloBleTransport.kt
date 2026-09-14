@@ -17,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -47,6 +48,15 @@ class SimulatedHaloBleTransport(
     private val speakerSink: (suspend (ByteArray) -> Unit)? = null,
     private val speakerSessionStart: (suspend (ByteArray) -> Unit)? = null,
     private val speakerSessionEnd: (suspend () -> Unit)? = null,
+    /**
+     * Runtime STATUS payload emitted in response to `sendLua` (the install
+     * path). Defaults to the v3 capability string.
+     */
+    private val statusCaps: String? =
+        "HRP1;primitives,sprites,click,tap,mic,speaker,photo,battery,sound,system,time,imu" +
+            ";fw=26.013.1043;eui=112233445566",
+    /** IMU payload emitted in response to `IMU_READ`. */
+    private val imuPayload: String = "0.10;-0.20;12.0;-3.0;48.0;1.0;-2.0;1001.0",
 ) : HaloBleTransport {
 
     private val transportScope = CoroutineScope(scope.coroutineContext + SupervisorJob())
@@ -54,7 +64,11 @@ class SimulatedHaloBleTransport(
     private val batteryOverride = AtomicReference<BatteryState?>(null)
 
     private val _messages = MutableSharedFlow<HaloMessage>(extraBufferCapacity = 128)
-    override val messages = _messages.asSharedFlow()
+    // Every new subscriber gets the runtime boot STATUS immediately, mirroring
+    // the real runtime announcing itself when the host starts listening.
+    override val messages = _messages.onSubscription {
+        statusCaps?.let { emit(HaloMessage(HaloProtocol.STATUS, it.toByteArray())) }
+    }
 
     private val _connectionEvents = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
     override val connectionEvents = _connectionEvents.asSharedFlow()
@@ -66,6 +80,7 @@ class SimulatedHaloBleTransport(
     private val _recordedLua = mutableListOf<String>()
     private val _recordedHrp = mutableListOf<ByteArray>()
     private val _recordedAudioFrames = mutableListOf<ByteArray>()
+    private val _recordedControl = mutableListOf<Pair<Int, ByteArray>>()
     private val _speakerAudio = ByteArrayOutputStream()
 
     override val supportsAudio: Boolean
@@ -98,7 +113,9 @@ class SimulatedHaloBleTransport(
     override suspend fun sendLua(lua: String) {
         if (!applyReliability()) return
         _recordedLua.add(lua)
-        _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
+        _messages.tryEmit(
+            HaloMessage(HaloProtocol.STATUS, statusCaps?.toByteArray() ?: byteArrayOf(0)),
+        )
     }
 
     override suspend fun sendMessage(code: Int, payload: ByteArray) {
@@ -117,6 +134,14 @@ class SimulatedHaloBleTransport(
                 _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
             }
             HaloProtocol.DEVICE_STATUS -> _messages.tryEmit(HaloMessage(HaloProtocol.DEVICE_STATUS, batteryPayload()))
+            HaloProtocol.IMU_READ -> _messages.tryEmit(HaloMessage(HaloProtocol.IMU, imuPayload.toByteArray()))
+            HaloProtocol.SOUND_PLAY,
+            HaloProtocol.SYSTEM,
+            HaloProtocol.SET_TIME,
+            HaloProtocol.TAP_CONFIG -> {
+                _recordedControl.add(code to payload.copyOf())
+                _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
+            }
             HaloProtocol.HRP -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
             HaloProtocol.STATUS -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, payload))
             HaloProtocol.ERROR -> _messages.tryEmit(HaloMessage(HaloProtocol.ERROR, payload))
@@ -156,6 +181,9 @@ class SimulatedHaloBleTransport(
 
     /** Concatenated speaker audio bytes. */
     val speakerAudio: ByteArray get() = _speakerAudio.toByteArray()
+
+    /** `(code, payload)` pairs recorded for control commands (sound, system, time, tap config). */
+    val recordedControl: List<Pair<Int, ByteArray>> get() = _recordedControl.toList()
 
     // ------------------------------------------------------------------
     // Device-initiated injection (taps, buttons, battery, disconnect)
