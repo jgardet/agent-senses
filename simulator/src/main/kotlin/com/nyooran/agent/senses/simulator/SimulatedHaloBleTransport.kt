@@ -53,7 +53,7 @@ class SimulatedHaloBleTransport(
      * path). Defaults to the v3 capability string.
      */
     private val statusCaps: String? =
-        "HRP1;primitives,sprites,click,tap,mic,speaker,photo,battery,sound,system,time,imu" +
+        "HRP1;primitives,sprites,click,tap,mic,speaker,photo,battery,sound,system,time,imu,mpix" +
             ";fw=26.013.1043;eui=112233445566",
     /** IMU payload emitted in response to `IMU_READ`. */
     private val imuPayload: String = "0.10;-0.20;12.0;-3.0;48.0;1.0;-2.0;1001.0",

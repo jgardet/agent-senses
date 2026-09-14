@@ -4,6 +4,7 @@ import com.nyooran.agent.senses.*
 import com.nyooran.agent.senses.simulator.Scenario
 import com.nyooran.agent.senses.simulator.SimulatedHaloBleTransport
 import halo.engine.HaloProtocol
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -287,6 +288,61 @@ class PhysicalHaloEndpointTest {
             deviceOptions = mapOf("bitDepth" to 8),
         ))
         assertEquals(8, result.format.bitDepth)
+        ep.close()
+    }
+
+    // ------------------------------------------------------------------ mpix pipeline
+
+    @Test
+    fun imageInputResizeReportsPostPipelineDims() = runBlocking {
+        // runBlocking: the simulated photo stream emits on a real dispatcher
+        // and would lose the race against runTest's auto-advancing timeout.
+        val (ep, _) = makeInstalledEndpoint()
+        ep.connect()
+        val result = ep.imageInput(ImageInputRequest(
+            resolution = 640,
+            maxBytes = 65536,
+            deviceOptions = mapOf("resize" to listOf(320, 320)),
+        ))
+        assertEquals(320, result.format.width)
+        assertEquals(320, result.format.height)
+        ep.close()
+    }
+
+    @Test
+    fun imageInputRejectsMalformedCrop() = runTest {
+        val (ep, _) = makeInstalledEndpoint()
+        ep.connect()
+        assertFailsWith<SensesError.Rejected> {
+            ep.imageInput(ImageInputRequest(
+                resolution = 640,
+                maxBytes = 65536,
+                deviceOptions = mapOf("crop" to listOf(1, 2, 3)),
+            ))
+        }
+        ep.close()
+    }
+
+    @Test
+    fun imageInputRejectsMpixWhenRuntimeLacksIt() = runTest {
+        val transport = SimulatedHaloBleTransport(
+            scenario = Scenario(),
+            statusCaps = "HRP1;primitives,sprites,mic,speaker,photo,battery",
+        )
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                runtimeInstaller = { it.sendLua("require 'halo_engine'") },
+            ),
+        )
+        ep.connect()
+        assertFailsWith<SensesError.Unavailable> {
+            ep.imageInput(ImageInputRequest(
+                resolution = 640,
+                maxBytes = 65536,
+                deviceOptions = mapOf("resize" to listOf(320, 320)),
+            ))
+        }
         ep.close()
     }
 }

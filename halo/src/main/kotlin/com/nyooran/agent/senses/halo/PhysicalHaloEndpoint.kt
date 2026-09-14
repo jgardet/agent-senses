@@ -449,13 +449,47 @@ class PhysicalHaloEndpoint(
             ?: request.deviceOptions["quality_index"] as? Int
             ?: 4).coerceIn(0, 4)
 
-        val startPayload = byteArrayOf(
-            qualityIndex.toByte(),
-            (320 shr 8).toByte(),
-            320.toByte(),
-            (140 shr 8).toByte(),
-            140.toByte(),
-            0,
+        // Optional on-device mpix pipeline ops (see HaloCommands.MpixOp).
+        // Crop/resize shrink the JPEG before the slow BLE transfer; denoise
+        // and convolution kernels improve what the agent sees.
+        val mpixOps = mutableListOf<HaloCommands.MpixOp>()
+        parseIntList(request.deviceOptions["crop"], 4, "crop")?.let { (x, y, w, h) ->
+            mpixOps.add(HaloCommands.MpixOp.Crop(x, y, w, h))
+        }
+        parseIntList(request.deviceOptions["resize"], 2, "resize")?.let { (w, h) ->
+            mpixOps.add(HaloCommands.MpixOp.ResizeSubsample(w, h))
+        }
+        when (request.deviceOptions["denoise"]) {
+            "5x5" -> mpixOps.add(HaloCommands.MpixOp.Denoise5x5)
+            null -> Unit
+            else -> mpixOps.add(HaloCommands.MpixOp.Denoise3x3)
+        }
+        (request.deviceOptions["kernel"] as? String)?.let { name ->
+            val kernel = when (name.lowercase()) {
+                "edge_detect" -> HaloCommands.MpixOp.Kernel.EDGE_DETECT
+                "gaussian_blur" -> HaloCommands.MpixOp.Kernel.GAUSSIAN_BLUR
+                "identity" -> HaloCommands.MpixOp.Kernel.IDENTITY
+                "sharpen" -> HaloCommands.MpixOp.Kernel.SHARPEN
+                else -> throw SensesError.Rejected("unknown mpix kernel: $name")
+            }
+            when (request.deviceOptions["kernelSize"] as? String) {
+                "5x5" -> mpixOps.add(HaloCommands.MpixOp.Convolve5x5(kernel))
+                else -> mpixOps.add(HaloCommands.MpixOp.Convolve3x3(kernel))
+            }
+        }
+        (request.deviceOptions["jpegQuality"] as? Int)?.let {
+            mpixOps.add(HaloCommands.MpixOp.JpegQuality(it))
+        }
+        if (mpixOps.isNotEmpty()) {
+            requireRuntimeCapability("mpix")
+        }
+
+        val startPayload = HaloCommands.capturePhoto(
+            qualityIndex = qualityIndex,
+            halfResolution = 320,
+            panShifted = 140,
+            raw = false,
+            ops = mpixOps,
         )
 
         val timeout = effectiveTimeout(request.timeoutMillis, 30_000)
@@ -480,9 +514,14 @@ class PhysicalHaloEndpoint(
         }
 
         val completedAt = System.currentTimeMillis()
+        // Report the post-pipeline dimensions when a resize/crop op set them.
+        val outDims = mpixOps.filterIsInstance<HaloCommands.MpixOp.ResizeSubsample>().lastOrNull()?.let { it.w to it.h }
+            ?: mpixOps.filterIsInstance<HaloCommands.MpixOp.Crop>().lastOrNull()?.let { it.w to it.h }
+        val outFormat = outDims?.let { config.imageFormat.copy(width = it.first, height = it.second) }
+            ?: config.imageFormat
         return ImageInputResult(
             image = image,
-            format = config.imageFormat,
+            format = outFormat,
             isRaw = false,
             provenance = Provenance(
                 operationId = opId,
@@ -494,8 +533,8 @@ class PhysicalHaloEndpoint(
                 mediaFormat = MediaFormat(
                     encoding = config.imageFormat.encoding,
                     mime = config.imageFormat.mime,
-                    width = config.imageFormat.width,
-                    height = config.imageFormat.height,
+                    width = outFormat.width,
+                    height = outFormat.height,
                 ),
                 startedAt = startedAt,
                 completedAt = completedAt,
@@ -920,6 +959,21 @@ class PhysicalHaloEndpoint(
 
     private fun effectiveTimeout(requested: Long, default: Long): Long =
         minOf(if (requested > 0) requested else default, config.operationTimeout.inWholeMilliseconds)
+
+    /** Parse a `deviceOptions` entry as a fixed-size list of ints. */
+    private fun parseIntList(value: Any?, expectedSize: Int, name: String): List<Int>? {
+        if (value == null) return null
+        val list = when (value) {
+            is IntArray -> value.toList()
+            is List<*> -> value.map { (it as? Number)?.toInt()
+                ?: throw SensesError.Rejected("$name entries must be integers") }
+            else -> throw SensesError.Rejected("$name must be a list of $expectedSize integers")
+        }
+        if (list.size != expectedSize) {
+            throw SensesError.Rejected("$name must contain $expectedSize integers, got ${list.size}")
+        }
+        return list
+    }
 
     /** Get the current framebuffer snapshot (for test assertions). */
     fun framebufferSnapshot(): IntArray = renderer.snapshot()
