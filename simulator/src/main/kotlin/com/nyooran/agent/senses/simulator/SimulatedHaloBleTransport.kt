@@ -3,6 +3,7 @@ package com.nyooran.agent.senses.simulator
 import com.nyooran.agent.senses.BatteryState
 import com.nyooran.agent.senses.DeviceFeature
 import halo.engine.HaloBleTransport
+import halo.engine.HaloCommands
 import halo.engine.HaloMessage
 import halo.engine.HaloProtocol
 import java.io.ByteArrayOutputStream
@@ -53,7 +54,7 @@ class SimulatedHaloBleTransport(
      * path). Defaults to the v3 capability string.
      */
     private val statusCaps: String? =
-        "HRP1;primitives,sprites,click,tap,mic,speaker,photo,battery,sound,system,time,imu,mpix" +
+        "HRP1;primitives,sprites,click,tap,mic,speaker,photo,battery,sound,system,time,imu,mpix,lz4" +
             ";fw=26.013.1043;eui=112233445566",
     /** IMU payload emitted in response to `IMU_READ`. */
     private val imuPayload: String = "0.10;-0.20;12.0;-3.0;48.0;1.0;-2.0;1001.0",
@@ -201,11 +202,11 @@ class SimulatedHaloBleTransport(
 
     /** Emit a temple-tap event. [gestureCode] follows the firmware encoding: 1 single, 2 double, 3 triple. */
     fun injectTap(gestureCode: Int = 1): Boolean =
-        injectDeviceMessage(HaloProtocol.TAP, byteArrayOf(gestureCode.toByte()))
+        injectDeviceMessage(HaloProtocol.TAP, HaloCommands.tapEvent(gestureCode))
 
     /** Emit a physical-button event. [gestureCode] follows the firmware encoding: 1 single, 2 double, 3 long. */
     fun injectButton(gestureCode: Int = 1): Boolean =
-        injectDeviceMessage(HaloProtocol.BUTTON, byteArrayOf(gestureCode.toByte()))
+        injectDeviceMessage(HaloProtocol.BUTTON, HaloCommands.buttonEvent(gestureCode))
 
     /**
      * Simulate the wearable disconnecting: active streams are cancelled and a
@@ -319,12 +320,7 @@ class SimulatedHaloBleTransport(
 
     private fun batteryPayload(): ByteArray {
         val battery = batteryOverride.get() ?: scenario.battery
-        return byteArrayOf(
-            (battery.level and 0xff).toByte(),
-            ((battery.voltage ushr 8) and 0xff).toByte(),
-            (battery.voltage and 0xff).toByte(),
-            if (battery.charging) 1.toByte() else 0.toByte(),
-        )
+        return HaloCommands.batteryStatus(battery.level, battery.voltage, battery.charging)
     }
 
     private fun scheduleBatteryStatus() {

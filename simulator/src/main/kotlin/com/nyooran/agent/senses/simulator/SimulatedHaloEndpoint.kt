@@ -2,6 +2,7 @@ package com.nyooran.agent.senses.simulator
 
 import com.nyooran.agent.senses.*
 import com.nyooran.agent.senses.audio.PcmToWav
+import halo.engine.HaloCommands
 import halo.engine.HaloProtocol
 import halo.engine.HsdHrpCompiler
 import halo.engine.StubSpritePacker
@@ -57,7 +58,7 @@ class SimulatedHaloEndpoint(
         val audioDurationMillis: Long = 100,
         val audioFormat: AudioFormat = AudioFormat(16000, 16, 1, "wav", "audio/wav"),
         val imageFixture: ByteArray = MINIMAL_JPEG,
-        val imageFormat: ImageFormat = ImageFormat("jpeg", "image/jpeg", 640, 640),
+        val imageFormat: ImageFormat = ImageFormat("jpeg", "image/jpeg", 640, 480),
         val connectionDelayMillis: Long = 0,
         val micChunkCount: Int = 1000,
         val maxHrpBytes: Int = 4096,
@@ -180,10 +181,10 @@ class SimulatedHaloEndpoint(
         )
         val audioStateMachine = CapabilityStateMachine(audioConfig)
 
-        val startPayload = byteArrayOf(
-            (request.gain + 10).toByte(),
-            if (request.aec) 1.toByte() else 0.toByte(),
-            if (request.voice) 1.toByte() else 0.toByte(),
+        val startPayload = HaloCommands.microphoneStart(
+            gain = request.gain,
+            aec = request.aec,
+            voice = request.voice,
         )
         audioStateMachine.handleMessage(HaloProtocol.MICROPHONE_START, startPayload)
 
@@ -242,13 +243,11 @@ class SimulatedHaloEndpoint(
         val startedAt = System.currentTimeMillis()
         _recordedAudio.add(request.audio)
 
-        val startPayload = byteArrayOf(
-            0, // PCM encoder
-            (request.format.sampleRate shr 8).toByte(),
-            request.format.sampleRate.toByte(),
-            request.format.bitDepth.toByte(),
-            request.format.channels.toByte(),
-            request.volume.toByte(),
+        val startPayload = HaloCommands.speakerStart(
+            sampleRate = request.format.sampleRate,
+            bitDepth = request.format.bitDepth,
+            channels = request.format.channels,
+            volume = request.volume,
         )
         stateMachine.handleMessage(HaloProtocol.SPEAKER_START, startPayload)
         stateMachine.drainEvents()
@@ -279,7 +278,7 @@ class SimulatedHaloEndpoint(
 
     override suspend fun imageInput(request: ImageInputRequest): ImageInputResult {
         if (request.resolution != 640) {
-            throw SensesError.Rejected("Halo camera is fixed at 640x640, requested ${request.resolution}")
+            throw SensesError.Rejected("Halo camera is fixed at 640x480, requested ${request.resolution}")
         }
         if (request.deviceOptions["raw"] as? Boolean == true) {
             throw SensesError.Rejected("Halo camera does not support raw capture")
@@ -310,14 +309,7 @@ class SimulatedHaloEndpoint(
         )
         val photoMachine = CapabilityStateMachine(photoConfig)
 
-        val capturePayload = byteArrayOf(
-            qualityIndex.toByte(),
-            (320 shr 8).toByte(),
-            320.toByte(),
-            (140 shr 8).toByte(),
-            140.toByte(),
-            0,
-        )
+        val capturePayload = HaloCommands.capturePhoto(qualityIndex = qualityIndex)
         photoMachine.handleMessage(HaloProtocol.CAPTURE_PHOTO, capturePayload)
 
         var safety = 0

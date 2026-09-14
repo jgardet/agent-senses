@@ -79,7 +79,7 @@ class PhysicalHaloEndpoint(
         val maxHrpBytes: Int = 4096,
         val maxHsdBytes: Int = 65_536,
         val audioFormat: AudioFormat = AudioFormat(16000, 16, 1, "wav", "audio/wav"),
-        val imageFormat: ImageFormat = ImageFormat("jpeg", "image/jpeg", 640, 640),
+        val imageFormat: ImageFormat = ImageFormat("jpeg", "image/jpeg", 640, 480),
         val spritePacker: SpritePacker? = null,
         val runtimeInstaller: suspend (HaloBleTransport) -> Unit = {},
         /** Optional callback invoked when an interaction event arrives from the device. */
@@ -439,7 +439,7 @@ class PhysicalHaloEndpoint(
             throw SensesError.Rejected("Halo camera does not support pan")
         }
         if (request.resolution != 640) {
-            throw SensesError.Rejected("Halo camera is fixed at 640x640, requested ${request.resolution}")
+            throw SensesError.Rejected("Halo camera is fixed at 640x480, requested ${request.resolution}")
         }
 
         val opId = nextOpId()
@@ -615,7 +615,10 @@ class PhysicalHaloEndpoint(
             throw SensesError.Rejected("invalid HSD JSON: ${e.message}")
         }
         return try {
-            HsdHrpCompiler(config.spritePacker ?: StubSpritePacker()).compile(scene)
+            HsdHrpCompiler(
+                config.spritePacker ?: StubSpritePacker(),
+                lz4Sprites = runtimeCapabilities?.contains("lz4") == true,
+            ).compile(scene)
         } catch (e: IllegalArgumentException) {
             throw SensesError.Rejected("HSD compilation failed: ${e.message}")
         }

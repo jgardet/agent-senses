@@ -48,4 +48,4 @@ The `halo-engine` composite build is included automatically via `settings.gradle
 - `PhysicalHaloEndpoint` owns the physical Halo sense lifecycle. Streaming capabilities go through `HaloSession.collect` or `HaloSession.requestResponse`, not hand-rolled collection loops.
 - Speaker playback uses receiver-paced `sendAudioFrame` with `delay` between frames; do not remove the pacing or the firmware input queue overflows.
 - Microphone PCM is wrapped as 16 kHz mono 16-bit WAV via `PcmToWav` before returning to the agent; raw PCM is never returned.
-- Photo capture is fixed at 640×640 JPEG by the current firmware profile; pan and raw are rejected, not silently ignored.
+- Photo capture is fixed at 640×480 JPEG by the current firmware profile; pan and raw are rejected, not silently ignored.
