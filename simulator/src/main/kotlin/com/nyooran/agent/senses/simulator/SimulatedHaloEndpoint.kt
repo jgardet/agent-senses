@@ -71,7 +71,15 @@ class SimulatedHaloEndpoint(
         }
     }
 
-    private val renderer = HrpRenderer()
+    /**
+     * Simulated device sprite file cache (`spr_<key>` contents). Shared with
+     * the renderer so cached defines resolve like the firmware runtime; tests
+     * can seed/inspect it. Populated automatically on sprite compilation,
+     * mirroring the SPRITE_STORE + cached-define flow.
+     */
+    val spriteFiles: MutableMap<String, ByteArray> = mutableMapOf()
+
+    private val renderer = HrpRenderer(spriteFiles = spriteFiles)
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
@@ -416,7 +424,10 @@ class SimulatedHaloEndpoint(
                     throw SensesError.Rejected("Invalid HSD JSON: ${e.message}")
                 }
                 try {
-                    HsdHrpCompiler(spritePacker, lz4Sprites = true).compile(scene)
+                    HsdHrpCompiler(spritePacker, lz4Sprites = true, cacheSprites = true)
+                        .compileDetailed(scene)
+                        .also { spriteFiles.putAll(it.spriteAssets) }
+                        .frame
                 } catch (e: IllegalArgumentException) {
                     throw SensesError.Rejected("HSD compilation failed: ${e.message}")
                 } catch (e: NotImplementedError) {

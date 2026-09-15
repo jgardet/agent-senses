@@ -105,10 +105,23 @@ class PhysicalHaloEndpoint(
          * when it matches. Null means "any running runtime is acceptable".
          */
         val expectedRuntimeVersion: String? = null,
+        /**
+         * JPEG encode quality applied on-device when the caller passes no
+         * mpix options and the runtime advertises `mpix`. Reduces JPEG bytes
+         * before the BLE transfer without changing the 640x480 contract —
+         * result dimensions stay untouched. Null disables the default.
+         */
+        val defaultJpegQuality: Int? = 70,
     )
 
     private val session = HaloSession(transport)
-    private val renderer = HrpRenderer()
+    /**
+     * Host-side mirror of the device's sprite file cache (`spr_<key>` assets
+     * persisted via `SPRITE_STORE`). Shared with [renderer] so cached-define
+     * commands render the same way the firmware runtime resolves them.
+     */
+    private val spriteFiles = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+    private val renderer = HrpRenderer(spriteFiles = spriteFiles)
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -118,6 +131,9 @@ class PhysicalHaloEndpoint(
     private var operationCounter = 0
     private var messageJob: Job? = null
     private var connectionJob: Job? = null
+
+    /** Sprite cache keys confirmed stored this session, mapped to the packed asset's content hash. */
+    private val storedSprites = mutableMapOf<String, Int>()
 
     private val interactionQueue = ConcurrentLinkedQueue<InteractionEvent>()
     private val _recordedInteractions = mutableListOf<InteractionEvent>()
@@ -227,6 +243,10 @@ class PhysicalHaloEndpoint(
             }
             statusWait.cancel()
         }
+
+        // Re-verify cached sprites each session: the runtime may have been
+        // reinstalled or its files cleared since the last connection.
+        storedSprites.clear()
 
         if (config.syncTimeOnConnect) {
             runCatching {
@@ -515,7 +535,13 @@ class PhysicalHaloEndpoint(
         (request.deviceOptions["jpegQuality"] as? Int)?.let {
             mpixOps.add(HaloCommands.MpixOp.JpegQuality(it))
         }
-        if (mpixOps.isNotEmpty()) {
+        if (mpixOps.isEmpty() && config.defaultJpegQuality != null &&
+            runtimeCapabilities?.contains("mpix") == true
+        ) {
+            // No caller-supplied ops: shrink the JPEG encode on-device before
+            // the slow BLE transfer. Dimensions stay 640x480.
+            mpixOps.add(HaloCommands.MpixOp.JpegQuality(config.defaultJpegQuality))
+        } else if (mpixOps.isNotEmpty()) {
             requireRuntimeCapability("mpix")
         }
 
@@ -582,9 +608,16 @@ class PhysicalHaloEndpoint(
         val opId = nextOpId()
         val startedAt = System.currentTimeMillis()
 
-        val hrpPayload = compileVisualPayload(request)
+        val compiled = compileVisualPayload(request)
+        val hrpPayload = compiled.frame
         if (hrpPayload.size > config.maxHrpBytes) {
             throw SensesError.LimitExceeded("HRP payload ${hrpPayload.size} exceeds limit ${config.maxHrpBytes}")
+        }
+
+        // Cached defines (opcode 0x10) require the asset on-device first —
+        // persist any missing keys via SPRITE_STORE before the frame is sent.
+        for ((key, asset) in compiled.spriteAssets) {
+            ensureSpriteStored(key, asset)
         }
 
         _recordedHrp.add(hrpPayload)
@@ -618,13 +651,13 @@ class PhysicalHaloEndpoint(
         )
     }
 
-    private fun compileVisualPayload(request: VisualOutputRequest): ByteArray {
+    private fun compileVisualPayload(request: VisualOutputRequest): HsdHrpCompiler.CompiledHsd {
         val payload = request.content.payload
         return when (request.content.kind) {
             VisualContent.VisualKind.DEVICE_NATIVE -> {
                 when (request.content.format ?: "hrp") {
                     "hsd" -> compileHsd(payload)
-                    "hrp" -> payload
+                    "hrp" -> HsdHrpCompiler.CompiledHsd(payload, emptyMap())
                     else -> throw SensesError.Rejected("unsupported device_native format: ${request.content.format}")
                 }
             }
@@ -640,7 +673,7 @@ class PhysicalHaloEndpoint(
         }
     }
 
-    private fun compileHsd(payload: ByteArray): ByteArray {
+    private fun compileHsd(payload: ByteArray): HsdHrpCompiler.CompiledHsd {
         if (payload.size > config.maxHsdBytes) {
             throw SensesError.LimitExceeded("HSD payload ${payload.size} exceeds limit ${config.maxHsdBytes}")
         }
@@ -653,10 +686,40 @@ class PhysicalHaloEndpoint(
             HsdHrpCompiler(
                 config.spritePacker ?: StubSpritePacker(),
                 lz4Sprites = runtimeCapabilities?.contains("lz4") == true,
-            ).compile(scene)
+                cacheSprites = runtimeCapabilities?.contains("spritecache") == true,
+            ).compileDetailed(scene)
         } catch (e: IllegalArgumentException) {
             throw SensesError.Rejected("HSD compilation failed: ${e.message}")
         }
+    }
+
+    /**
+     * Persist [packedAsset] under [key] in the device's sprite file cache
+     * (`spr_<key>`). No-op when the same asset was already confirmed this
+     * session; an existing key with different content is re-stored.
+     */
+    suspend fun precacheSprite(key: String, packedAsset: ByteArray) {
+        ensureReady()
+        ensureSpriteStored(key, packedAsset)
+    }
+
+    private suspend fun ensureSpriteStored(key: String, asset: ByteArray) {
+        val hash = asset.contentHashCode()
+        if (storedSprites[key] == hash) return
+        try {
+            session.requestResponse(
+                HaloProtocol.SPRITE_STORE,
+                HaloCommands.spriteStore(key, asset),
+                HaloProtocol.SPRITE_STORED,
+                timeout = config.operationTimeout,
+            )
+        } catch (e: TimeoutCancellationException) {
+            throw SensesError.Timeout("sprite store timed out")
+        } catch (e: HaloDeviceException) {
+            throw SensesError.Rejected("sprite store rejected: ${e.message}")
+        }
+        storedSprites[key] = hash
+        spriteFiles[key] = asset
     }
 
     private fun textToHsd(text: String): ByteArray =

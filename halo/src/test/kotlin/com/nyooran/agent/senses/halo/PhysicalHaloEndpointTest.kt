@@ -4,6 +4,7 @@ import com.nyooran.agent.senses.*
 import com.nyooran.agent.senses.simulator.Scenario
 import com.nyooran.agent.senses.simulator.SimulatedHaloBleTransport
 import halo.engine.HaloProtocol
+import halo.engine.SpritePacker
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -226,14 +227,14 @@ class PhysicalHaloEndpointTest {
         val ep = PhysicalHaloEndpoint(
             transport = transport,
             config = PhysicalHaloEndpoint.HaloEndpointConfig(
-                expectedRuntimeVersion = "3.1",
+                expectedRuntimeVersion = "3.2",
                 runtimeInstaller = { installed = true },
             ),
         )
         ep.connect()
         assertFalse(installed)
         assertEquals(EndpointState.READY, ep.state.value)
-        assertEquals("3.1", ep.runtimeVersion)
+        assertEquals("3.2", ep.runtimeVersion)
         assertEquals("unknown", ep.wakeupSource)
         assertTrue(ep.runtimeCapabilities!!.contains("sound"))
         ep.close()
@@ -418,5 +419,146 @@ class PhysicalHaloEndpointTest {
             ))
         }
         ep.close()
+    }
+
+    @Test
+    fun imageInputAppliesDefaultJpegQualityWhenRuntimeHasMpix() = runBlocking {
+        // runBlocking: the simulated photo stream emits on a real dispatcher.
+        val (ep, transport) = makeInstalledEndpoint()
+        ep.connect()
+        ep.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536))
+        val req = transport.lastCaptureRequest!!
+        // 6-byte header + op count 1 + jpeg_quality op (0x07, 70).
+        assertEquals(9, req.size)
+        assertEquals(1, req[6].toInt())
+        assertEquals(0x07, req[7].toInt() and 0xFF)
+        assertEquals(70, req[8].toInt() and 0xFF)
+        ep.close()
+    }
+
+    @Test
+    fun imageInputSkipsDefaultJpegQualityWhenOpsProvided() = runBlocking {
+        val (ep, transport) = makeInstalledEndpoint()
+        ep.connect()
+        ep.imageInput(ImageInputRequest(
+            resolution = 640,
+            maxBytes = 65536,
+            deviceOptions = mapOf("resize" to listOf(320, 320)),
+        ))
+        val req = transport.lastCaptureRequest!!
+        // Only the caller's resize op — no default jpeg_quality appended.
+        assertEquals(1, req[6].toInt())
+        assertEquals(0x02, req[7].toInt() and 0xFF)
+        ep.close()
+    }
+
+    @Test
+    fun imageInputSkipsDefaultJpegQualityWithoutMpixCapability() = runBlocking {
+        val transport = SimulatedHaloBleTransport(
+            statusCaps = "HRP1;primitives,sprites,mic,battery;rt=3.1",
+        )
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                runtimeInstaller = { it.sendLua("require 'halo_engine'") },
+            ),
+        )
+        ep.connect()
+        ep.imageInput(ImageInputRequest(resolution = 640, maxBytes = 65536))
+        // No mpix ops tail on a capless runtime — legacy 6-byte header only.
+        assertEquals(6, transport.lastCaptureRequest!!.size)
+        ep.close()
+    }
+
+    // ------------------------------------------------------------------ sprite file cache
+
+    private object TinyPacker : SpritePacker {
+        override fun pack(src: String, width: Int?, height: Int?, bpp: Int) = SpritePacker.Sprite(
+            width = 2, height = 2, bpp = 1, numColors = 2,
+            paletteData = byteArrayOf(0, 0, 0, -1, -1, -1),
+            pixelData = byteArrayOf(1, 1, 1, 1),
+        )
+    }
+
+    private fun hrpOpcodes(frame: ByteArray): List<Int> {
+        val opcodes = mutableListOf<Int>()
+        var offset = 7
+        while (offset < frame.size) {
+            opcodes += frame[offset].toInt() and 0xFF
+            offset += 3 + (((frame[offset + 1].toInt() and 0xFF) shl 8) or (frame[offset + 2].toInt() and 0xFF))
+        }
+        return opcodes
+    }
+
+    private fun spriteHsd(extra: String = ""): VisualOutputRequest = VisualOutputRequest(
+        VisualContent(
+            VisualContent.VisualKind.DEVICE_NATIVE,
+            """{"scene":{"children":[{"type":"sprite","src":"mem://icon",$extra"x":4,"y":4,"w":2,"h":2,"bpp":1}]}}"""
+                .toByteArray(),
+            format = "hsd",
+        ),
+    )
+
+    @Test
+    fun spriteCachingStoresAssetThenEmitsCachedDefines() = runTest {
+        val transport = SimulatedHaloBleTransport()
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(spritePacker = TinyPacker),
+        )
+        ep.connect()
+
+        ep.visualOutput(spriteHsd())
+        // First present persists the packed asset under a content-hash key.
+        assertEquals(1, transport.spriteFiles.size)
+        assertTrue(transport.spriteFiles.keys.single().matches(Regex("[A-Za-z0-9_-]{1,64}")))
+        // The frame itself already uses the cached define — the endpoint
+        // stores before sending, so opcode 0x10 resolves on-device.
+        val firstOpcodes = hrpOpcodes(ep.recordedHrp.last())
+        assertTrue(0x10 in firstOpcodes)
+        assertFalse(0x0A in firstOpcodes)
+        val stores = transport.recordedControl.count { it.first == HaloProtocol.SPRITE_STORE }
+        assertEquals(1, stores)
+
+        // Second present skips the store (session-tracked) but still draws.
+        ep.visualOutput(spriteHsd())
+        assertEquals(1, transport.recordedControl.count { it.first == HaloProtocol.SPRITE_STORE })
+        assertTrue(0x10 in hrpOpcodes(ep.recordedHrp.last()))
+        ep.close()
+    }
+
+    @Test
+    fun spriteCachingDisabledWithoutRuntimeCapability() = runTest {
+        // Older runtimes lack `spritecache`: sprites fall back to inline defines.
+        val transport = SimulatedHaloBleTransport(
+            statusCaps = "HRP1;primitives,sprites,mic,battery,lz4;rt=3.1",
+        )
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(spritePacker = TinyPacker),
+        )
+        ep.connect()
+        ep.visualOutput(spriteHsd())
+        assertTrue(transport.spriteFiles.isEmpty())
+        assertTrue(transport.recordedControl.none { it.first == HaloProtocol.SPRITE_STORE })
+        assertTrue(0x0A in hrpOpcodes(ep.recordedHrp.last()))
+        ep.close()
+    }
+
+    @Test
+    fun precacheSpriteStoresAssetForExplicitCacheKey() = runTest {
+        val transport = SimulatedHaloBleTransport()
+        val epWithPacker = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(spritePacker = TinyPacker),
+        )
+        epWithPacker.connect()
+        val asset = halo.engine.HaloHost.packSpriteAsset(TinyPacker.pack("mem://icon", 2, 2, 1))
+        epWithPacker.precacheSprite("icon_nav", asset)
+        assertTrue(transport.spriteFiles.containsKey("icon_nav"))
+        // Explicit cache_key HSD now resolves on both device and host mirror.
+        epWithPacker.visualOutput(spriteHsd(""""cache_key":"icon_nav","""))
+        assertTrue(0x10 in hrpOpcodes(epWithPacker.recordedHrp.last()))
+        epWithPacker.close()
     }
 }

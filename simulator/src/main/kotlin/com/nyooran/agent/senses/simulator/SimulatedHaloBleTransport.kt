@@ -56,11 +56,18 @@ class SimulatedHaloBleTransport(
      * `RUNTIME_VERSION` in `he_runtime.lua`.
      */
     private val statusCaps: String? =
-        "HRP1;primitives,sprites,click,tap,mic,speaker,photo,battery,sound,system,time,imu,mpix,lz4" +
-            ";fw=26.013.1043;eui=112233445566;rt=3.1;wake=unknown",
+        "HRP1;primitives,sprites,click,tap,mic,speaker,photo,battery,sound,system,time,imu,spritecache,mpix,lz4" +
+            ";fw=26.013.1043;eui=112233445566;rt=3.2;wake=unknown",
     /** IMU payload emitted in response to `IMU_READ`. */
     private val imuPayload: String = "0.10;-0.20;12.0;-3.0;48.0;1.0;-2.0;1001.0",
 ) : HaloBleTransport {
+
+    /**
+     * Device-side sprite file cache (`spr_<key>` contents). `SPRITE_STORE`
+     * writes here and cached defines resolve against it — mirrors the
+     * runtime's `frame.file` persistence so tests can inspect/seed it.
+     */
+    val spriteFiles: MutableMap<String, ByteArray> = mutableMapOf()
 
     private val transportScope = CoroutineScope(scope.coroutineContext + SupervisorJob())
     private val lock = Mutex()
@@ -146,6 +153,19 @@ class SimulatedHaloBleTransport(
                 _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
             }
             HaloProtocol.HRP -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
+            // Persist a packed sprite asset into the device file cache and
+            // acknowledge with SPRITE_STORED (mirrors he_runtime's handler).
+            HaloProtocol.SPRITE_STORE -> {
+                val keyLen = payload.getOrElse(0) { 0 }.toInt() and 0xFF
+                if (payload.size < 2 + keyLen || keyLen == 0) {
+                    _messages.tryEmit(HaloMessage(HaloProtocol.ERROR, "sprite store: bad payload".toByteArray()))
+                } else {
+                    val key = String(payload, 1, keyLen, Charsets.UTF_8)
+                    spriteFiles[key] = payload.copyOfRange(1 + keyLen, payload.size)
+                    _recordedControl.add(code to payload.copyOf())
+                    _messages.tryEmit(HaloMessage(HaloProtocol.SPRITE_STORED, key.toByteArray()))
+                }
+            }
             // A STATUS query is the runtime probe: the running runtime
             // answers with its capability string (mirrors he_runtime's
             // STATUS handler used by the main.lua autorun fast path).
@@ -247,7 +267,12 @@ class SimulatedHaloBleTransport(
         activeStream.set(job)
     }
 
+    /** Last `CAPTURE_PHOTO` request payload (header + mpix ops). */
+    var lastCaptureRequest: ByteArray? = null
+        private set
+
     private fun startPhotoStream(request: ByteArray) {
+        lastCaptureRequest = request.copyOf()
         val source = photoSource
         if (source == null) {
             startStream(request, HaloProtocol.PHOTO_JPEG, HaloProtocol.PHOTO_FINAL) { imageFixture() }
