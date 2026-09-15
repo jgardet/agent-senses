@@ -1,8 +1,13 @@
 package com.nyooran.agent.senses.orchestration
 
 import com.nyooran.agent.senses.*
+import com.nyooran.agent.senses.audio.PcmToWav
+import com.nyooran.agent.senses.audio.WavReader
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
@@ -89,35 +94,111 @@ class SemanticSenseWorkflows(
         deviceOptions: Map<String, Any> = emptyMap(),
         volume: Int = 80,
     ): Result<SemanticSpeakResult> = cancellationAware {
-        val ttsResult = synthesize(text)
-        val ttsProvenance = Provenance(
-            operationId = "tts-${System.currentTimeMillis()}",
-            endpointId = EndpointId("model"),
-            backendName = "TtsModel",
-            backendKind = BackendKind.MODEL,
-            capability = SenseCapability.AudioOutput,
-            origin = ResultOrigin.MODEL,
-            transformations = listOf(Transformation.TTS_SYNTHESIS),
-            startedAt = System.currentTimeMillis(),
-            completedAt = System.currentTimeMillis(),
-        )
         val endpoint = resolve(endpointId, SenseCapability.AudioOutput)
         withOperation(endpoint) {
-            val outputResult = registry.coordinator.withCapability(endpoint, SenseCapability.AudioOutput) {
-                endpoint.audioOutput(AudioOutputRequest(
-                    audio = ttsResult.audio,
-                    format = ttsResult.format,
-                    volume = volume,
-                    deviceOptions = deviceOptions,
-                ))
+            // Sentence-level pipelining: synthesize each chunk while the
+            // previous one streams to the speaker, so synthesis of a
+            // multi-sentence reply no longer adds fully to first-byte
+            // latency. Single-chunk text takes the same path as before.
+            val chunks = splitSpeechChunks(text)
+            val ttsStartedAt = System.currentTimeMillis()
+            val pcm = ByteArrayOutputStream()
+            var outFormat: AudioFormat? = null
+            var firstOutput: AudioOutputResult? = null
+            var lastOutput: AudioOutputResult? = null
+
+            supervisorScope {
+                var pending: Deferred<TtsResult>? = async { synthesize(chunks.first()) }
+                for ((index, chunk) in chunks.withIndex()) {
+                    val ttsResult = pending!!.await()
+                    pending = chunks.getOrNull(index + 1)
+                        ?.let { next -> async { synthesize(next) } }
+                    val outputResult = registry.coordinator.withCapability(endpoint, SenseCapability.AudioOutput) {
+                        endpoint.audioOutput(AudioOutputRequest(
+                            audio = ttsResult.audio,
+                            format = ttsResult.format,
+                            volume = volume,
+                            deviceOptions = deviceOptions,
+                        ))
+                    }
+                    if (firstOutput == null) firstOutput = outputResult
+                    lastOutput = outputResult
+                    outFormat = ttsResult.format
+                    appendPcm(pcm, ttsResult)
+                }
+            }
+
+            val ttsProvenance = Provenance(
+                operationId = "tts-${ttsStartedAt}",
+                endpointId = EndpointId("model"),
+                backendName = "TtsModel",
+                backendKind = BackendKind.MODEL,
+                capability = SenseCapability.AudioOutput,
+                origin = ResultOrigin.MODEL,
+                transformations = listOf(Transformation.TTS_SYNTHESIS),
+                startedAt = ttsStartedAt,
+                completedAt = System.currentTimeMillis(),
+            )
+            val mergedAudio = outFormat?.let { format ->
+                PcmToWav.fromPcm16(
+                    pcm.toByteArray(),
+                    format.sampleRate,
+                    format.channels,
+                    format.bitDepth,
+                )
             }
             SemanticSpeakResult(
                 ttsProvenance = ttsProvenance,
-                outputProvenance = outputResult.provenance,
-                audio = ttsResult.audio,
-                format = ttsResult.format,
+                outputProvenance = lastOutput!!.provenance.copy(
+                    startedAt = firstOutput!!.provenance.startedAt,
+                ),
+                audio = mergedAudio,
+                format = outFormat,
             )
         }
+    }
+
+    /**
+     * Split [text] into speakable chunks on sentence boundaries. Fragments
+     * shorter than [MIN_SPEECH_CHUNK] merge into the previous chunk so
+     * playback stays natural; the result is capped at [MAX_SPEECH_CHUNKS]
+     * to bound per-call synthesis overhead.
+     */
+    private fun splitSpeechChunks(text: String): List<String> {
+        val trimmed = text.trim()
+        if (trimmed.length <= MIN_SPEECH_CHUNK) return listOf(trimmed)
+        val parts = trimmed.split(Regex("(?<=[.!?…])\\s+|\\n+"))
+            .filter { it.isNotBlank() }
+        if (parts.size <= 1) return listOf(trimmed)
+        val chunks = mutableListOf<String>()
+        for (part in parts) {
+            if (chunks.isNotEmpty() &&
+                (chunks.last().length < MIN_SPEECH_CHUNK || chunks.size >= MAX_SPEECH_CHUNKS)) {
+                chunks[chunks.lastIndex] = "${chunks.last()} $part"
+            } else {
+                chunks.add(part)
+            }
+        }
+        return chunks
+    }
+
+    private companion object {
+        /** Chunks shorter than this merge into the previous sentence. */
+        const val MIN_SPEECH_CHUNK = 24
+        /** Upper bound on per-utterance synthesis calls. */
+        const val MAX_SPEECH_CHUNKS = 12
+    }
+
+    /** Append the PCM payload of a TTS result to [out] (WAV header stripped). */
+    private suspend fun appendPcm(out: ByteArrayOutputStream, result: TtsResult) {
+        if (!result.format.encoding.equals("wav", ignoreCase = true)) {
+            out.write(result.audio)
+            return
+        }
+        WavReader.readPcm(
+            ByteArrayInputStream(result.audio),
+            result.format.sampleRate,
+        ).collect { frame -> out.write(frame) }
     }
 
     /**
