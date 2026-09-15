@@ -7,6 +7,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -238,6 +239,42 @@ class SenseEndpointRegistryTest {
         assertTrue(op2Cancelled)
         assertTrue(ep1.disconnected)
         assertTrue(ep2.disconnected)
+    }
+
+    @Test
+    fun cancelOperationsCancelsOnlyMatchingCapability() = runTest {
+        val registry = SenseEndpointRegistry()
+        registry.cancellationGracePeriodMillis = 500
+        val endpoint = FakeEndpoint(makeProfile("halo-1"))
+        registry.bind(endpoint)
+
+        var audioCancelled = false
+        var visualCancelled = false
+        val audioJob = launch { try { delay(10000) } catch (e: CancellationException) { audioCancelled = true } }
+        val visualJob = launch { try { delay(10000) } catch (e: CancellationException) { visualCancelled = true } }
+        runCurrent()
+        registry.registerOperation(EndpointId("halo-1"), "op-audio", audioJob, SenseCapability.AudioOutput)
+        registry.registerOperation(EndpointId("halo-1"), "op-visual", visualJob, SenseCapability.VisualOutput)
+
+        assertTrue(registry.hasActiveOperation(EndpointId("halo-1"), SenseCapability.AudioOutput))
+        val cancelled = registry.cancelOperations(EndpointId("halo-1"), SenseCapability.AudioOutput)
+        runCurrent()
+
+        assertEquals(1, cancelled)
+        assertTrue(audioCancelled, "audio op should have been cancelled")
+        assertFalse(visualCancelled, "visual op should still be running")
+        assertFalse(registry.hasActiveOperation(EndpointId("halo-1"), SenseCapability.AudioOutput))
+        visualJob.cancel()
+    }
+
+    @Test
+    fun cancelOperationsWithNoMatchIsNoOp() = runTest {
+        val registry = SenseEndpointRegistry()
+        val endpoint = FakeEndpoint(makeProfile("halo-1"))
+        registry.bind(endpoint)
+
+        assertEquals(0, registry.cancelOperations(EndpointId("halo-1"), SenseCapability.AudioOutput))
+        assertFalse(registry.hasActiveOperation(EndpointId("halo-1"), SenseCapability.AudioOutput))
     }
 
     @Test

@@ -72,7 +72,11 @@ class SenseEndpointRegistry {
     private val bindMutex = Mutex()
 
     /** Active operations per endpoint, keyed by operation ID. */
-    private val activeOperations = ConcurrentHashMap<EndpointId, MutableMap<String, Job>>()
+    /** A tracked operation: its coroutine job and (optional) capability tag. */
+    private data class TrackedOperation(val job: Job, val capability: SenseCapability?)
+
+    private val activeOperations =
+        ConcurrentHashMap<EndpointId, MutableMap<String, TrackedOperation>>()
 
     /** Observable active operations. */
     private val _operations = MutableStateFlow<Map<EndpointId, Set<String>>>(emptyMap())
@@ -139,12 +143,12 @@ class SenseEndpointRegistry {
     private suspend fun awaitCancellationAndDisconnect(endpointId: EndpointId, endpoint: SenseEndpoint) {
         val ops = activeOperations.remove(endpointId)
         if (ops != null && ops.isNotEmpty()) {
-            for (job in ops.values) {
-                job.cancel()
+            for (op in ops.values) {
+                op.job.cancel()
             }
             withTimeoutOrNull(cancellationGracePeriodMillis) {
-                for (job in ops.values) {
-                    job.join()
+                for (op in ops.values) {
+                    op.job.join()
                 }
             }
         }
@@ -177,12 +181,47 @@ class SenseEndpointRegistry {
      * Register an active operation for [endpointId].
      *
      * The operation's [Job] is tracked so it can be cancelled when the
-     * endpoint is unbound or replaced. Call [completeOperation] when done.
+     * endpoint is unbound or replaced, or via [cancelOperations] for a
+     * specific capability (e.g. barge-in interrupting audio output).
+     * Call [completeOperation] when done.
      */
-    fun registerOperation(endpointId: EndpointId, operationId: String, job: Job) {
-        activeOperations.getOrPut(endpointId) { ConcurrentHashMap() }[operationId] = job
+    fun registerOperation(
+        endpointId: EndpointId,
+        operationId: String,
+        job: Job,
+        capability: SenseCapability? = null,
+    ) {
+        activeOperations.getOrPut(endpointId) { ConcurrentHashMap() }[operationId] =
+            TrackedOperation(job, capability)
         refreshOperations()
     }
+
+    /**
+     * Cancel active operations using [capability] on [endpointId] and wait
+     * for them to unwind (up to [cancellationGracePeriodMillis]) so their
+     * cleanup — e.g. a speaker STOP — completes before returning.
+     * Returns the number of operations cancelled.
+     */
+    suspend fun cancelOperations(endpointId: EndpointId, capability: SenseCapability): Int {
+        val ops = activeOperations[endpointId]
+            ?.filterValues { it.capability == capability }
+            ?: return 0
+        if (ops.isEmpty()) return 0
+        for (op in ops.values) op.job.cancel()
+        withTimeoutOrNull(cancellationGracePeriodMillis) {
+            for (op in ops.values) op.job.join()
+        }
+        activeOperations[endpointId]?.let { endpointOps ->
+            for (id in ops.keys) endpointOps.remove(id)
+        }
+        refreshOperations()
+        return ops.size
+    }
+
+    /** True when an operation using [capability] is in flight on [endpointId]. */
+    fun hasActiveOperation(endpointId: EndpointId, capability: SenseCapability): Boolean =
+        activeOperations[endpointId]?.values
+            ?.any { it.capability == capability && it.job.isActive } == true
 
     /**
      * Mark an operation as completed and remove it from tracking.

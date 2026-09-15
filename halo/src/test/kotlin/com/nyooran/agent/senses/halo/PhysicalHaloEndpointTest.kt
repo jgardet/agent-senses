@@ -5,6 +5,8 @@ import com.nyooran.agent.senses.simulator.Scenario
 import com.nyooran.agent.senses.simulator.SimulatedHaloBleTransport
 import halo.engine.HaloProtocol
 import halo.engine.SpritePacker
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -415,6 +417,51 @@ class PhysicalHaloEndpointTest {
         ep.connect()
         val result = ep.audioInput(AudioInputRequest(maxDurationMillis = 100, maxBytes = 65536))
         assertTrue(result.audio.isNotEmpty())
+        ep.close()
+    }
+
+    @Test
+    fun audioOutputCancellationSendsSpeakerStop() = runBlocking {
+        // runBlocking: playback is receiver-paced with real delays, so a
+        // virtual-time dispatcher would let the whole clip finish before
+        // the cancel lands. 1 s of PCM = 100 x 10 ms frames; cancelling
+        // after 200 ms interrupts mid-stream.
+        var speakerStarted = false
+        var speakerStopped = false
+        val transport = SimulatedHaloBleTransport(
+            scenario = Scenario(),
+            speakerSessionStart = { speakerStarted = true },
+            speakerSessionEnd = { speakerStopped = true },
+        )
+        val ep = PhysicalHaloEndpoint(transport = transport)
+        ep.connect()
+
+        val pcm = ByteArray(32_000) // 1 s at 16 kHz s16le mono
+        val job = launch {
+            runCatching {
+                ep.audioOutput(AudioOutputRequest(
+                    audio = pcm,
+                    format = AudioFormat(
+                        encoding = "pcm",
+                        mime = "audio/pcm",
+                        sampleRate = 16_000,
+                        bitDepth = 16,
+                        channels = 1,
+                    ),
+                ))
+            }
+        }
+        // Wait until playback has actually started, then barge in.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!speakerStarted && System.currentTimeMillis() < deadline) {
+            delay(10)
+        }
+        assertTrue(speakerStarted, "playback never started")
+        delay(200)
+        job.cancel()
+        job.join()
+
+        assertTrue(speakerStopped, "cancelled playback must send SPEAKER_STOP")
         ep.close()
     }
 

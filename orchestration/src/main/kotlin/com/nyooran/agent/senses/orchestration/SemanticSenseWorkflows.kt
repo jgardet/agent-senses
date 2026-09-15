@@ -51,7 +51,7 @@ class SemanticSenseWorkflows(
         keepRaw: Boolean = false,
     ): Result<SemanticListenResult> = cancellationAware {
         val endpoint = resolve(endpointId, SenseCapability.AudioInput)
-        withOperation(endpoint) {
+        withOperation(endpoint, SenseCapability.AudioInput) {
             val audioResult = registry.coordinator.withCapability(endpoint, SenseCapability.AudioInput) {
                 endpoint.audioInput(request)
             }
@@ -71,7 +71,7 @@ class SemanticSenseWorkflows(
         keepRaw: Boolean = false,
     ): Result<SemanticLookResult> = cancellationAware {
         val endpoint = resolve(endpointId, SenseCapability.ImageInput)
-        withOperation(endpoint) {
+        withOperation(endpoint, SenseCapability.ImageInput) {
             val imageResult = registry.coordinator.withCapability(endpoint, SenseCapability.ImageInput) {
                 endpoint.imageInput(request)
             }
@@ -95,7 +95,7 @@ class SemanticSenseWorkflows(
         volume: Int = 80,
     ): Result<SemanticSpeakResult> = cancellationAware {
         val endpoint = resolve(endpointId, SenseCapability.AudioOutput)
-        withOperation(endpoint) {
+        withOperation(endpoint, SenseCapability.AudioOutput) {
             // Sentence-level pipelining: synthesize each chunk while the
             // previous one streams to the speaker, so synthesis of a
             // multi-sentence reply no longer adds fully to first-byte
@@ -191,7 +191,9 @@ class SemanticSenseWorkflows(
 
     /** Append the PCM payload of a TTS result to [out] (WAV header stripped). */
     private suspend fun appendPcm(out: ByteArrayOutputStream, result: TtsResult) {
-        if (!result.format.encoding.equals("wav", ignoreCase = true)) {
+        val isRiff = result.audio.size >= 4 &&
+            result.audio.copyOfRange(0, 4).contentEquals("RIFF".toByteArray())
+        if (!isRiff || !result.format.encoding.equals("wav", ignoreCase = true)) {
             out.write(result.audio)
             return
         }
@@ -210,7 +212,7 @@ class SemanticSenseWorkflows(
         endpointId: EndpointId? = null,
     ): Result<SemanticPresentResult> = cancellationAware {
         val endpoint = resolve(endpointId, SenseCapability.VisualOutput)
-        withOperation(endpoint) {
+        withOperation(endpoint, SenseCapability.VisualOutput) {
             val result = registry.coordinator.withCapability(endpoint, SenseCapability.VisualOutput) {
                 endpoint.visualOutput(VisualOutputRequest(content = content))
             }
@@ -228,7 +230,7 @@ class SemanticSenseWorkflows(
         request: InteractionInputRequest = InteractionInputRequest(),
     ): Result<SemanticWaitResult> = cancellationAware {
         val endpoint = resolve(endpointId, SenseCapability.InteractionInput)
-        withOperation(endpoint) {
+        withOperation(endpoint, SenseCapability.InteractionInput) {
             val result = registry.coordinator.withCapability(endpoint, SenseCapability.InteractionInput) {
                 endpoint.interactionInput(request)
             }
@@ -263,7 +265,7 @@ class SemanticSenseWorkflows(
             endpointId,
             setOf(SenseCapability.AudioInput, SenseCapability.ImageInput),
         )
-        return withOperation(endpoint) {
+        return withOperation(endpoint, SenseCapability.AudioInput) {
             val canOverlap = endpoint.profile.canOverlap(
                 SenseCapability.AudioInput,
                 SenseCapability.ImageInput,
@@ -341,11 +343,15 @@ class SemanticSenseWorkflows(
      * Register [block] as an active operation on [endpoint] and complete it
      * in a [finally] block, so unbind/replacement can cancel it.
      */
-    private suspend fun <T> withOperation(endpoint: SenseEndpoint, block: suspend (String) -> T): T {
+    private suspend fun <T> withOperation(
+        endpoint: SenseEndpoint,
+        capability: SenseCapability,
+        block: suspend (String) -> T,
+    ): T {
         val operationId = registry.nextOperationId()
         val job = coroutineContext[Job]
             ?: error("SemanticSenseWorkflows operations must run within a coroutine Job")
-        registry.registerOperation(endpoint.profile.endpointId, operationId, job)
+        registry.registerOperation(endpoint.profile.endpointId, operationId, job, capability)
         try {
             return block(operationId)
         } finally {
