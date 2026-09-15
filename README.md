@@ -66,8 +66,8 @@ for the design decisions behind these contracts.
 | Module | Role |
 |---|---|
 | `core` | Pure Kotlin contracts, profiles, failures, coordination, runtime lifecycle, and WAV helpers |
-| `halo` | `PhysicalHaloEndpoint` backed by `halo-engine` transport/session abstractions |
-| `simulator` | Deterministic `SimulatedHaloEndpoint`, scripted scenarios, virtual time, and test fixtures |
+| `halo` | `PhysicalHaloEndpoint` backed by `halo-engine` transport/session abstractions — autorun-aware connect probing, device sprite file caching, and mpix camera pipeline defaults |
+| `simulator` | Deterministic `SimulatedHaloEndpoint`/`SimulatedHaloBleTransport` with sprite-cache and image-path parity, scripted scenarios, virtual time, and test fixtures |
 | `routes` | Authenticated Ktor routes for the generic `/v1/sense/*` API |
 | `orchestration` | Semantic workflows and multi-modal operation composition |
 
