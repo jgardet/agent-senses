@@ -231,6 +231,26 @@ class PhysicalHaloEndpointTest {
     }
 
     @Test
+    fun playSoundWithoutSoundCapabilityThrowsUnavailable() = runTest {
+        // Runtime without "sound" in STATUS — ack callers must fail closed.
+        val transport = SimulatedHaloBleTransport(
+            statusCaps = "HRP1;primitives,sprites,mic,battery;fw=26.013.1043",
+        )
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                runtimeInstaller = { it.sendLua("require 'halo_engine'") },
+            ),
+        )
+        ep.connect()
+        assertFailsWith<SensesError.Unavailable> {
+            ep.playSound("blip")
+        }
+        assertTrue(transport.recordedControl.none { it.first == HaloProtocol.SOUND_PLAY })
+        ep.close()
+    }
+
+    @Test
     fun systemPowerSaveSendsSystemMessage() = runTest {
         val (ep, transport) = makeInstalledEndpoint()
         ep.connect()

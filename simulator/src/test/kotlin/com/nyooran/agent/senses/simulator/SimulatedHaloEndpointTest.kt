@@ -1,9 +1,11 @@
 package com.nyooran.agent.senses.simulator
 
 import com.nyooran.agent.senses.*
+import halo.engine.SpritePacker
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -179,6 +181,43 @@ class SimulatedHaloEndpointTest {
         )))
         assertEquals(1, ep.recordedHrp.size)
         assertEquals(7, ep.recordedHrp[0].size)
+    }
+
+    @Test
+    fun visualOutputSpriteWithoutPackerIsUnavailable() = runTest {
+        val ep = makeEndpoint()
+        ep.connect()
+        val hsd = """{"scene":{"children":[{"type":"sprite","src":"data:image/png;base64,x","x":4,"y":4,"bpp":4,"resource_id":7}]}}"""
+        assertFailsWith<SensesError.Unavailable> {
+            ep.visualOutput(VisualOutputRequest(VisualContent(
+                VisualContent.VisualKind.DEVICE_NATIVE, hsd.toByteArray(), "hsd",
+            )))
+        }
+    }
+
+    @Test
+    fun visualOutputSpriteWithInjectedPacker() = runTest {
+        val ep = makeEndpoint()
+        ep.spritePacker = object : SpritePacker {
+            override fun pack(src: String, width: Int?, height: Int?, bpp: Int) =
+                SpritePacker.Sprite(
+                    width = width ?: 8,
+                    height = height ?: 8,
+                    bpp = bpp,
+                    numColors = 2,
+                    paletteData = byteArrayOf(0, 0, 0, -1, -1, -1),
+                    pixelData = ByteArray(64) { 1 },
+                )
+        }
+        ep.connect()
+        val hsd = """{"scene":{"children":[{"type":"sprite","src":"data:image/png;base64,x","x":4,"y":4,"bpp":4,"resource_id":7}]}}"""
+        ep.visualOutput(VisualOutputRequest(VisualContent(
+            VisualContent.VisualKind.DEVICE_NATIVE, hsd.toByteArray(), "hsd",
+        )))
+        assertTrue(ep.recordedHrp.isNotEmpty())
+        // The sprite landed on the simulated framebuffer (pixels are ARGB;
+        // the cleared background is opaque black).
+        assertTrue(ep.framebufferSnapshot().any { it != 0xFF000000.toInt() })
     }
 
     @Test

@@ -5,6 +5,7 @@ import com.nyooran.agent.senses.audio.PcmToWav
 import halo.engine.HaloCommands
 import halo.engine.HaloProtocol
 import halo.engine.HsdHrpCompiler
+import halo.engine.SpritePacker
 import halo.engine.StubSpritePacker
 import halo.engine.display.HrpFailure
 import halo.engine.display.HrpRenderer
@@ -72,6 +73,15 @@ class SimulatedHaloEndpoint(
 
     private val renderer = HrpRenderer()
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Packer used for `sprite` HSD elements. Defaults to [StubSpritePacker]
+     * (throws on use) so the endpoint stays dependency-free on every
+     * platform; hosts inject a real implementation — `JvmSpritePacker` in
+     * JVM tests, `AndroidSpritePacker` in the app — enabling the `image`
+     * template and `sense_show_image` paths in simulation.
+     */
+    var spritePacker: SpritePacker = StubSpritePacker()
 
     private val stateMachine = CapabilityStateMachine(
         CapabilityConfig(
@@ -371,7 +381,7 @@ class SimulatedHaloEndpoint(
                 _recordedHrp.add(request.content.payload)
             }
             VisualContent.VisualKind.TEXT -> {
-                stateMachine.handleMessage(0x11, request.content.payload)
+                stateMachine.handleMessage(HaloProtocol.PLAIN_TEXT, request.content.payload)
                 stateMachine.drainEvents()
             }
         }
@@ -406,9 +416,11 @@ class SimulatedHaloEndpoint(
                     throw SensesError.Rejected("Invalid HSD JSON: ${e.message}")
                 }
                 try {
-                    HsdHrpCompiler(StubSpritePacker()).compile(scene)
+                    HsdHrpCompiler(spritePacker, lz4Sprites = true).compile(scene)
                 } catch (e: IllegalArgumentException) {
                     throw SensesError.Rejected("HSD compilation failed: ${e.message}")
+                } catch (e: NotImplementedError) {
+                    throw SensesError.Unavailable("simulator has no sprite packer: ${e.message}")
                 }
             }
             "hrp" -> {
@@ -424,7 +436,7 @@ class SimulatedHaloEndpoint(
     override suspend fun textOutput(request: TextOutputRequest): TextOutputResult {
         val opId = "sim-op-${++operationCounter}"
         val startedAt = System.currentTimeMillis()
-        stateMachine.handleMessage(0x11, request.content.text.toByteArray())
+        stateMachine.handleMessage(HaloProtocol.PLAIN_TEXT, request.content.text.toByteArray())
         stateMachine.drainEvents()
         val completedAt = System.currentTimeMillis()
         return TextOutputResult(
