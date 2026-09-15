@@ -50,12 +50,14 @@ class SimulatedHaloBleTransport(
     private val speakerSessionStart: (suspend (ByteArray) -> Unit)? = null,
     private val speakerSessionEnd: (suspend () -> Unit)? = null,
     /**
-     * Runtime STATUS payload emitted in response to `sendLua` (the install
-     * path). Defaults to the v3 capability string.
+     * Runtime STATUS payload emitted on subscribe, in response to `sendLua`
+     * (the install path), and in reply to a STATUS query (the autorun
+     * probe). Defaults to the v3 capability string; `rt` must track
+     * `RUNTIME_VERSION` in `he_runtime.lua`.
      */
     private val statusCaps: String? =
         "HRP1;primitives,sprites,click,tap,mic,speaker,photo,battery,sound,system,time,imu,mpix,lz4" +
-            ";fw=26.013.1043;eui=112233445566",
+            ";fw=26.013.1043;eui=112233445566;rt=3.1;wake=unknown",
     /** IMU payload emitted in response to `IMU_READ`. */
     private val imuPayload: String = "0.10;-0.20;12.0;-3.0;48.0;1.0;-2.0;1001.0",
 ) : HaloBleTransport {
@@ -144,7 +146,12 @@ class SimulatedHaloBleTransport(
                 _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
             }
             HaloProtocol.HRP -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, byteArrayOf(0)))
-            HaloProtocol.STATUS -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, payload))
+            // A STATUS query is the runtime probe: the running runtime
+            // answers with its capability string (mirrors he_runtime's
+            // STATUS handler used by the main.lua autorun fast path).
+            HaloProtocol.STATUS -> _messages.tryEmit(
+                HaloMessage(HaloProtocol.STATUS, statusCaps?.toByteArray() ?: byteArrayOf(0)),
+            )
             HaloProtocol.ERROR -> _messages.tryEmit(HaloMessage(HaloProtocol.ERROR, payload))
             else -> _messages.tryEmit(HaloMessage(HaloProtocol.STATUS, payload))
         }

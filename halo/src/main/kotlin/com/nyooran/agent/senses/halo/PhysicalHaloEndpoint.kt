@@ -26,6 +26,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -45,6 +46,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 
@@ -63,6 +65,14 @@ import kotlinx.serialization.json.JsonObject
  * - Provenance identifies physical Halo and firmware profile.
  * - Keeps Gemma, semantic workflows, and TTS policy outside the endpoint.
  */
+/**
+ * How long [connect] waits for a STATUS answer when probing for an
+ * already-running runtime (`main.lua` autorun). One BLE round-trip is
+ * ~50–300 ms; 800 ms leaves headroom for a busy device without adding
+ * noticeable connect latency when no runtime is up.
+ */
+private const val PROBE_TIMEOUT_MS = 800L
+
 class PhysicalHaloEndpoint(
     private val transport: HaloBleTransport,
     private val config: HaloEndpointConfig = HaloEndpointConfig(),
@@ -88,6 +98,13 @@ class PhysicalHaloEndpoint(
         val speakerVolume: Int = 80,
         /** Push the host clock/timezone to `frame.time` after the runtime installs. */
         val syncTimeOnConnect: Boolean = true,
+        /**
+         * Runtime version this host expects (`;rt=` in STATUS). When the
+         * runtime is already running — e.g. via a `main.lua` autorun — the
+         * connect probe compares its version and skips [runtimeInstaller]
+         * when it matches. Null means "any running runtime is acceptable".
+         */
+        val expectedRuntimeVersion: String? = null,
     )
 
     private val session = HaloSession(transport)
@@ -119,6 +136,14 @@ class PhysicalHaloEndpoint(
 
     /** Device EUI reported by the runtime (`frame.get_eui()`). */
     var deviceEui: String? = null
+        private set
+
+    /** Runtime version reported in STATUS (`;rt=` token), null for pre-3.1 runtimes. */
+    var runtimeVersion: String? = null
+        private set
+
+    /** Wakeup source reported in STATUS (`;wake=` token), e.g. `button`/`imu`/`ble`. */
+    var wakeupSource: String? = null
         private set
 
     private val _recordedHrp = mutableListOf<ByteArray>()
@@ -170,28 +195,38 @@ class PhysicalHaloEndpoint(
             transport.connect()
         }
 
-        // Subscribe for the runtime's boot STATUS before installing so the
-        // announcement emitted during `require` is not missed. The install
-        // itself can take seconds on real hardware, so this collector is
-        // always live by the time the runtime announces itself.
-        val statusWait = scope.async {
-            transport.messages.first { msg ->
-                msg.code == HaloProtocol.STATUS &&
-                    msg.payload.size >= 3 &&
-                    msg.payload[0] == 'H'.code.toByte() &&
-                    msg.payload[1] == 'R'.code.toByte() &&
-                    msg.payload[2] == 'P'.code.toByte()
+        // Subscribe for STATUS before probing or installing so no runtime
+        // announcement is missed. The collector runs on the caller's
+        // context so it stays deterministic under virtual-time test
+        // dispatchers (unlike the endpoint's Dispatchers.IO scope).
+        coroutineScope {
+            val statusWait = async { transport.messages.first(::isRuntimeStatus) }
+
+            // Fast path: a runtime already running via main.lua autorun
+            // answers a STATUS query, sparing the upload. Only run the
+            // installer when nothing answers or the running version is
+            // older than expected — the probe is the live source of truth,
+            // unlike persisted "already installed" flags that go stale
+            // across glasses reboots.
+            val probed = withTimeoutOrNull(PROBE_TIMEOUT_MS) {
+                runCatching { transport.sendMessage(HaloProtocol.STATUS, ByteArray(0)) }
+                statusWait.await()
             }
-        }
+            if (probed != null) parseRuntimeStatus(probed.payload)
+            val stale = config.expectedRuntimeVersion != null &&
+                runtimeVersion != config.expectedRuntimeVersion
+            if (probed == null || stale) {
+                config.runtimeInstaller(transport)
 
-        config.runtimeInstaller(transport)
-
-        // Capture negotiated capabilities and firmware metadata before
-        // reporting READY; a runtime that never announces just times out.
-        runCatching {
-            withTimeout(2_000) { parseRuntimeStatus(statusWait.await().payload) }
+                // Await the post-install announcement and re-parse it.
+                runCatching {
+                    withTimeout(2_000) {
+                        parseRuntimeStatus(transport.messages.first(::isRuntimeStatus).payload)
+                    }
+                }
+            }
+            statusWait.cancel()
         }
-        statusWait.cancel()
 
         if (config.syncTimeOnConnect) {
             runCatching {
@@ -915,12 +950,21 @@ class PhysicalHaloEndpoint(
             when {
                 token.startsWith("fw=") -> firmwareVersion = token.removePrefix("fw=")
                 token.startsWith("eui=") -> deviceEui = token.removePrefix("eui=")
+                token.startsWith("rt=") -> runtimeVersion = token.removePrefix("rt=")
+                token.startsWith("wake=") -> wakeupSource = token.removePrefix("wake=")
                 else -> caps.addAll(token.split(',').map { it.trim() }.filter { it.isNotEmpty() })
             }
         }
         caps.add(tokens[0])
         runtimeCapabilities = caps
     }
+
+    private fun isRuntimeStatus(msg: HaloMessage): Boolean =
+        msg.code == HaloProtocol.STATUS &&
+            msg.payload.size >= 3 &&
+            msg.payload[0] == 'H'.code.toByte() &&
+            msg.payload[1] == 'R'.code.toByte() &&
+            msg.payload[2] == 'P'.code.toByte()
 
     private fun requireRuntimeCapability(token: String) {
         val caps = runtimeCapabilities ?: return

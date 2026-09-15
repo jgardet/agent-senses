@@ -218,6 +218,60 @@ class PhysicalHaloEndpointTest {
     }
 
     @Test
+    fun connectSkipsInstallerWhenRuntimeAlreadyRunning() = runTest {
+        // Boot STATUS announces a running runtime (main.lua autorun); the
+        // STATUS probe answers, so the installer must not run.
+        var installed = false
+        val transport = SimulatedHaloBleTransport()
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                expectedRuntimeVersion = "3.1",
+                runtimeInstaller = { installed = true },
+            ),
+        )
+        ep.connect()
+        assertFalse(installed)
+        assertEquals(EndpointState.READY, ep.state.value)
+        assertEquals("3.1", ep.runtimeVersion)
+        assertEquals("unknown", ep.wakeupSource)
+        assertTrue(ep.runtimeCapabilities!!.contains("sound"))
+        ep.close()
+    }
+
+    @Test
+    fun connectInstallsWhenRuntimeVersionStale() = runTest {
+        var installed = false
+        val transport = SimulatedHaloBleTransport()
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                expectedRuntimeVersion = "9.9",
+                runtimeInstaller = { installed = true; it.sendLua("require 'halo_engine'") },
+            ),
+        )
+        ep.connect()
+        assertTrue(installed)
+        ep.close()
+    }
+
+    @Test
+    fun connectInstallsWhenProbeUnanswered() = runTest {
+        var installed = false
+        val transport = SimulatedHaloBleTransport(statusCaps = null)
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                runtimeInstaller = { installed = true; it.sendLua("require 'halo_engine'") },
+            ),
+        )
+        ep.connect()
+        assertTrue(installed)
+        assertEquals(EndpointState.READY, ep.state.value)
+        ep.close()
+    }
+
+    @Test
     fun playSoundSendsSoundPlay() = runTest {
         val (ep, transport) = makeInstalledEndpoint()
         ep.connect()
