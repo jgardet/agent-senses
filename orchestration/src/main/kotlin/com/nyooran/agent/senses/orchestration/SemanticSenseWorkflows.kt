@@ -86,6 +86,8 @@ class SemanticSenseWorkflows(
     suspend fun speakText(
         text: String,
         endpointId: EndpointId? = null,
+        deviceOptions: Map<String, Any> = emptyMap(),
+        volume: Int = 80,
     ): Result<SemanticSpeakResult> = cancellationAware {
         val ttsResult = synthesize(text)
         val ttsProvenance = Provenance(
@@ -105,6 +107,8 @@ class SemanticSenseWorkflows(
                 endpoint.audioOutput(AudioOutputRequest(
                     audio = ttsResult.audio,
                     format = ttsResult.format,
+                    volume = volume,
+                    deviceOptions = deviceOptions,
                 ))
             }
             SemanticSpeakResult(

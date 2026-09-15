@@ -112,6 +112,14 @@ class PhysicalHaloEndpoint(
          * result dimensions stay untouched. Null disables the default.
          */
         val defaultJpegQuality: Int? = 70,
+        /** End mic capture early on trailing silence (16-bit PCM only). */
+        val silenceEarlyStop: Boolean = true,
+        /** Minimum capture length before early stop may trigger. */
+        val silenceMinCaptureMillis: Long = 800,
+        /** Trailing silence duration that ends the capture. */
+        val silenceTrailingMillis: Long = 1_200,
+        /** Peak 16-bit amplitude treated as silence (speech is typically >1000). */
+        val silencePeakThreshold: Int = 400,
     )
 
     private val session = HaloSession(transport)
@@ -322,6 +330,20 @@ class PhysicalHaloEndpoint(
             channels = channels,
         )
 
+        // Trailing-silence early stop: the detector watches live PCM chunks
+        // and asks the session to send MICROPHONE_STOP once the user stops
+        // talking, so short commands don't pay the full capture window.
+        val silence = if (config.silenceEarlyStop && format.bitDepth == 16) {
+            TrailingSilenceDetector(
+                bytesPerSecond = format.sampleRate * format.channels * 2,
+                minCaptureMillis = config.silenceMinCaptureMillis,
+                trailingSilenceMillis = config.silenceTrailingMillis,
+                peakThreshold = config.silencePeakThreshold,
+            )
+        } else {
+            null
+        }
+
         val pcm = try {
             session.collect(
                 startCode = HaloProtocol.MICROPHONE_START,
@@ -332,6 +354,7 @@ class PhysicalHaloEndpoint(
                 timeout = timeout.milliseconds,
                 maxBytes = maxBytes,
                 stopAfter = request.maxDurationMillis.milliseconds,
+                shouldStopEarly = { chunk -> silence?.offer(chunk) == true },
             )
         } catch (e: HaloLimitException) {
             throw SensesError.LimitExceeded(e.message ?: "audio limit exceeded")
@@ -404,7 +427,16 @@ class PhysicalHaloEndpoint(
             budget = (request.deviceOptions["budget"] as? Int) ?: 0,
         )
 
-        val timeout = effectiveTimeout(request.timeoutMillis, 30_000)
+        // Playback streams at real-time pace, so the deadline must cover the
+        // payload's own duration — a flat cap times out mid-utterance on
+        // large payloads (maxAudioBytes is ~33 s of PCM). An explicit
+        // request timeout is honored literally; otherwise derive it from
+        // the payload plus a link margin. The WAV header is ~44 bytes, a
+        // negligible overestimate.
+        val bytesPerSecond = targetSampleRate * targetChannels * (targetBitDepth / 8)
+        val estimatedMillis = request.audio.size.toLong() * 1000L / bytesPerSecond
+        val derivedTimeout = maxOf(30_000L, estimatedMillis + 15_000L)
+        val timeout = if (request.timeoutMillis > 0) request.timeoutMillis else derivedTimeout
 
         try {
             withTimeout(timeout.milliseconds) {
@@ -1091,6 +1123,39 @@ class PhysicalHaloEndpoint(
     /** Close the endpoint scope. Call when the endpoint is unbound. */
     fun close() {
         scope.cancel()
+    }
+}
+
+/**
+ * Peak-amplitude trailing-silence detector over s16le PCM chunks. Chunks
+ * arrive in near real-time during capture, so this doubles as a wall-clock
+ * trailing-silence estimate: once the capture is past [minCaptureMillis]
+ * and the last [trailingSilenceMillis] of audio stayed under
+ * [peakThreshold], [offer] returns true.
+ */
+private class TrailingSilenceDetector(
+    private val bytesPerSecond: Int,
+    private val minCaptureMillis: Long,
+    private val trailingSilenceMillis: Long,
+    private val peakThreshold: Int,
+) {
+    private var totalBytes = 0L
+    private var silentBytes = 0L
+
+    fun offer(pcm: ByteArray): Boolean {
+        totalBytes += pcm.size
+        var peak = 0
+        var i = 0
+        while (i + 1 < pcm.size) {
+            val sample = (pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8)
+            val amplitude = kotlin.math.abs(sample.toShort().toInt())
+            if (amplitude > peak) peak = amplitude
+            i += 2
+        }
+        silentBytes = if (peak <= peakThreshold) silentBytes + pcm.size else 0
+        val totalMs = totalBytes * 1000L / bytesPerSecond
+        val silentMs = silentBytes * 1000L / bytesPerSecond
+        return totalMs >= minCaptureMillis && silentMs >= trailingSilenceMillis
     }
 }
 

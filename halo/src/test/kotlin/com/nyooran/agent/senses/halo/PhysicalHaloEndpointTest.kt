@@ -366,6 +366,58 @@ class PhysicalHaloEndpointTest {
         ep.close()
     }
 
+    @Test
+    fun audioInputStopsEarlyOnTrailingSilence() = runBlocking {
+        // runBlocking: the simulated mic stream emits on a real dispatcher
+        // and would lose the race against runTest's virtual time.
+        // 640-byte chunks = 20 ms each at 16 kHz s16le mono. High bytes set
+        // to 0x04 give a 1024 peak amplitude, above the silence threshold.
+        val loud = ByteArray(640) { i -> if (i % 2 == 1) 0x04 else 0x00 }
+        val silent = ByteArray(640)
+        var emitted = 0
+        val transport = SimulatedHaloBleTransport(
+            scenario = Scenario(),
+            microphoneSource = { emit ->
+                repeat(4) { emit(loud); emitted++ }
+                while (true) {
+                    emit(silent)
+                    emitted++
+                    kotlinx.coroutines.yield()
+                }
+            },
+        )
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                silenceMinCaptureMillis = 40,
+                silenceTrailingMillis = 100,
+                silencePeakThreshold = 400,
+            ),
+        )
+        ep.connect()
+        val result = ep.audioInput(AudioInputRequest(
+            maxDurationMillis = 10_000,
+            maxBytes = 65536,
+        ))
+        // MICROPHONE_STOP cancelled the source after ~9 chunks (4 loud + ~5
+        // silent); without early stop it would stream for the full 10 s.
+        assertTrue(emitted < 50, "expected early stop, emitted=$emitted")
+        assertTrue(result.durationMillis < 1_000)
+        ep.close()
+    }
+
+    @Test
+    fun audioInputSilenceEarlyStopDisabledCapturesFixture() = runTest {
+        val ep = PhysicalHaloEndpoint(
+            transport = SimulatedHaloBleTransport(scenario = Scenario()),
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(silenceEarlyStop = false),
+        )
+        ep.connect()
+        val result = ep.audioInput(AudioInputRequest(maxDurationMillis = 100, maxBytes = 65536))
+        assertTrue(result.audio.isNotEmpty())
+        ep.close()
+    }
+
     // ------------------------------------------------------------------ mpix pipeline
 
     @Test
