@@ -19,7 +19,7 @@ import halo.engine.display.HrpFailure
 import halo.engine.display.HrpRenderer
 import java.io.ByteArrayInputStream
 import java.util.TimeZone
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ConcurrentLinkedDeque
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -72,6 +72,9 @@ import kotlinx.serialization.json.JsonObject
  * noticeable connect latency when no runtime is up.
  */
 private const val PROBE_TIMEOUT_MS = 800L
+
+/** Cap on recorded interaction history so diagnostics stay bounded. */
+private const val MAX_RECORDED_INTERACTIONS = 256
 
 class PhysicalHaloEndpoint(
     private val transport: HaloBleTransport,
@@ -143,8 +146,13 @@ class PhysicalHaloEndpoint(
     /** Sprite cache keys confirmed stored this session, mapped to the packed asset's content hash. */
     private val storedSprites = mutableMapOf<String, Int>()
 
-    private val interactionQueue = ConcurrentLinkedQueue<InteractionEvent>()
-    private val _recordedInteractions = mutableListOf<InteractionEvent>()
+    /**
+     * Broadcasts device interaction events to all waiters (C2-08). Each
+     * `interactionInput` caller collects its own filtered copy — diagnostics
+     * and concurrent waiters never consume each other's events.
+     */
+    private val interactions = InteractionBroadcaster()
+    private val _recordedInteractions = ConcurrentLinkedDeque<InteractionEvent>()
     val recordedInteractions: List<InteractionEvent> get() = _recordedInteractions.toList()
 
     /**
@@ -267,7 +275,7 @@ class PhysicalHaloEndpoint(
 
         connectionJob = scope.launch {
             transport.connectionEvents.first { connected -> !connected }
-            _state.value = EndpointState.DISCONNECTED
+            signalDisconnected()
             messageJob?.cancel()
             messageJob = null
         }
@@ -277,8 +285,19 @@ class PhysicalHaloEndpoint(
 
     override suspend fun disconnect() = withContext(NonCancellable) {
         runCatching { transport.disconnect() }
+        signalDisconnected()
         cancelJobs()
         _state.value = EndpointState.DISCONNECTED
+    }
+
+    /**
+     * Transition to DISCONNECTED and emit [InteractionEvent.Disconnected] so
+     * pending `interactionInput` waiters unblock instead of timing out.
+     * Idempotent — only the first READY→DISCONNECTED transition emits.
+     */
+    private suspend fun signalDisconnected() {
+        if (!_state.compareAndSet(EndpointState.READY, EndpointState.DISCONNECTED)) return
+        dispatchInteraction(InteractionEvent.Disconnected)
     }
 
     private fun cancelJobs() {
@@ -286,7 +305,6 @@ class PhysicalHaloEndpoint(
         messageJob = null
         connectionJob?.cancel()
         connectionJob = null
-        interactionQueue.clear()
     }
 
     private fun ensureReady() {
@@ -773,7 +791,9 @@ class PhysicalHaloEndpoint(
         val timeout = effectiveTimeout(request.timeoutMillis, 60_000)
         val event = try {
             withTimeout(timeout.milliseconds) {
-                waitForInteraction(request)
+                interactions.events.first {
+                    InteractionFilter(it, request) || it is InteractionEvent.Disconnected
+                }
             }
         } catch (e: TimeoutCancellationException) {
             throw SensesError.Timeout("interaction input timed out")
@@ -795,24 +815,6 @@ class PhysicalHaloEndpoint(
                 completedAt = completedAt,
             ),
         )
-    }
-
-    private tailrec suspend fun waitForInteraction(request: InteractionInputRequest): InteractionEvent {
-        pollInteraction(request)?.let { return it }
-        delay(50)
-        return waitForInteraction(request)
-    }
-
-    private fun pollInteraction(request: InteractionInputRequest): InteractionEvent? {
-        val iterator = interactionQueue.iterator()
-        while (iterator.hasNext()) {
-            val event = iterator.next()
-            if (request.acceptedGestures.isEmpty() || InteractionFilter(event, request)) {
-                iterator.remove()
-                return event
-            }
-        }
-        return null
     }
 
     override suspend fun statusInput(request: StatusInputRequest): StatusInputResult {
@@ -1019,7 +1021,7 @@ class PhysicalHaloEndpoint(
         try {
             transport.sendMessage(code, payload)
         } catch (e: HaloTransportException) {
-            _state.value = EndpointState.DISCONNECTED
+            signalDisconnected()
             throw SensesError.Disconnected(e.message ?: "transport disconnected")
         }
     }
@@ -1078,10 +1080,7 @@ class PhysicalHaloEndpoint(
                     3 -> TapGesture.TRIPLE
                     else -> return
                 }
-                val event = InteractionEvent.Tap(gesture)
-                _recordedInteractions.add(event)
-                interactionQueue.add(event)
-                config.onInteraction(event)
+                dispatchInteraction(InteractionEvent.Tap(gesture))
             }
             HaloProtocol.BUTTON -> {
                 val gesture = when (msg.payload.getOrElse(0) { 0 }.toInt()) {
@@ -1090,12 +1089,29 @@ class PhysicalHaloEndpoint(
                     3 -> ButtonGesture.LONG
                     else -> return
                 }
-                val event = InteractionEvent.Button(gesture)
-                _recordedInteractions.add(event)
-                interactionQueue.add(event)
-                config.onInteraction(event)
+                dispatchInteraction(InteractionEvent.Button(gesture))
             }
             else -> { /* HaloSession or other consumers handle these. */ }
+        }
+    }
+
+    /**
+     * Deliver a device interaction event to every observer: the bounded
+     * diagnostics history, all pending `interactionInput` waiters (via the
+     * broadcaster), and the configured callback. A throwing [config]
+     * callback must not kill the device message loop.
+     */
+    private suspend fun dispatchInteraction(event: InteractionEvent) {
+        _recordedInteractions.add(event)
+        while (_recordedInteractions.size > MAX_RECORDED_INTERACTIONS) {
+            _recordedInteractions.pollFirst()
+        }
+        interactions.tryBroadcast(event)
+        try {
+            config.onInteraction(event)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
         }
     }
 
@@ -1123,6 +1139,8 @@ class PhysicalHaloEndpoint(
     /** Close the endpoint scope. Call when the endpoint is unbound. */
     fun close() {
         scope.cancel()
+        _recordedInteractions.add(InteractionEvent.Disconnected)
+        interactions.tryBroadcast(InteractionEvent.Disconnected)
     }
 }
 

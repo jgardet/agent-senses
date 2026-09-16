@@ -5,10 +5,12 @@ import com.nyooran.agent.senses.simulator.Scenario
 import com.nyooran.agent.senses.simulator.SimulatedHaloBleTransport
 import halo.engine.HaloProtocol
 import halo.engine.SpritePacker
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -659,5 +661,145 @@ class PhysicalHaloEndpointTest {
         epWithPacker.visualOutput(spriteHsd(""""cache_key":"icon_nav","""))
         assertTrue(0x10 in hrpOpcodes(epWithPacker.recordedHrp.last()))
         epWithPacker.close()
+    }
+
+    // ------------------------------------------------------------------ interaction broadcast (P3-03)
+    //
+    // runBlocking throughout: device messages are dispatched on the
+    // endpoint's Dispatchers.IO message loop, not a virtual-time dispatcher.
+
+    @Test
+    fun tapReachesWaiterDiagnosticsAndCallback() = runBlocking {
+        val observed = mutableListOf<InteractionEvent>()
+        val transport = SimulatedHaloBleTransport(scenario = Scenario())
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                onInteraction = { observed.add(it) },
+            ),
+        )
+        ep.connect()
+
+        val waiter = async { ep.interactionInput(InteractionInputRequest()) }
+        // Emit until the waiter has subscribed and caught one — there is no
+        // subscription signal, so retry rather than race it.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!waiter.isCompleted && System.currentTimeMillis() < deadline) {
+            transport.injectTap(1)
+            delay(20)
+        }
+        val result = withTimeout(5_000) { waiter.await() }
+
+        val tap = result.event as InteractionEvent.Tap
+        assertEquals(TapGesture.SINGLE, tap.gesture)
+        assertEquals(BackendKind.PHYSICAL, result.provenance.backendKind)
+        assertEquals(ResultOrigin.SENSOR, result.provenance.origin)
+        assertEquals(SenseCapability.InteractionInput, result.provenance.capability)
+
+        // Broadcast is non-destructive: the diagnostics callback and the
+        // recorded history observe the same event the waiter consumed.
+        val diagDeadline = System.currentTimeMillis() + 2_000
+        while (observed.isEmpty() && System.currentTimeMillis() < diagDeadline) delay(10)
+        assertTrue(observed.any { it is InteractionEvent.Tap })
+        assertTrue(ep.recordedInteractions.any { it is InteractionEvent.Tap })
+        ep.close()
+    }
+
+    @Test
+    fun everyWaiterReceivesTheSameEvent() = runBlocking {
+        val (ep, transport) = makeInstalledEndpoint()
+        ep.connect()
+        val w1 = async { ep.interactionInput(InteractionInputRequest()) }
+        val w2 = async { ep.interactionInput(InteractionInputRequest()) }
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!(w1.isCompleted && w2.isCompleted) && System.currentTimeMillis() < deadline) {
+            transport.injectTap(1)
+            delay(20)
+        }
+        assertTrue(w1.isCompleted && w2.isCompleted,
+            "broadcast must deliver the event to both waiters")
+        assertTrue(withTimeout(5_000) { w1.await() }.event is InteractionEvent.Tap)
+        assertTrue(withTimeout(5_000) { w2.await() }.event is InteractionEvent.Tap)
+        ep.close()
+    }
+
+    @Test
+    fun gestureFilterDeliversOnlyMatchingEvents() = runBlocking {
+        val (ep, transport) = makeInstalledEndpoint()
+        ep.connect()
+        val waiter = async {
+            ep.interactionInput(InteractionInputRequest(
+                acceptedGestures = setOf(InteractionType.BUTTON_LONG),
+            ))
+        }
+        // Taps must not satisfy a button-only waiter; they still reach
+        // diagnostics rather than being consumed by the wrong subscriber.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!waiter.isCompleted && System.currentTimeMillis() < deadline) {
+            transport.injectTap(1)
+            transport.injectButton(3)
+            delay(20)
+        }
+        val result = withTimeout(5_000) { waiter.await() }
+        assertEquals(ButtonGesture.LONG, (result.event as InteractionEvent.Button).gesture)
+        assertTrue(ep.recordedInteractions.any { it is InteractionEvent.Tap })
+        ep.close()
+    }
+
+    @Test
+    fun deviceDisconnectEmitsDisconnectedToWaiters() = runBlocking {
+        val (ep, transport) = makeInstalledEndpoint()
+        ep.connect()
+        val waiter = async {
+            ep.interactionInput(InteractionInputRequest(
+                acceptedGestures = setOf(InteractionType.TAP_SINGLE),
+            ))
+        }
+        delay(50) // let the waiter subscribe
+        transport.simulateDisconnect()
+        val result = withTimeout(5_000) { waiter.await() }
+        // A filtered waiter still learns about the disconnect instead of
+        // hanging until its timeout.
+        assertEquals(InteractionEvent.Disconnected, result.event)
+        assertEquals(EndpointState.DISCONNECTED, ep.state.value)
+        ep.close()
+    }
+
+    @Test
+    fun userDisconnectUnblocksWaiters() = runBlocking {
+        val (ep, _) = makeInstalledEndpoint()
+        ep.connect()
+        val waiter = async { ep.interactionInput(InteractionInputRequest()) }
+        delay(50)
+        ep.disconnect()
+        val result = withTimeout(5_000) { waiter.await() }
+        assertEquals(InteractionEvent.Disconnected, result.event)
+        ep.close()
+    }
+
+    @Test
+    fun throwingInteractionCallbackDoesNotKillMessageLoop() = runBlocking {
+        val transport = SimulatedHaloBleTransport(scenario = Scenario())
+        val ep = PhysicalHaloEndpoint(
+            transport = transport,
+            config = PhysicalHaloEndpoint.HaloEndpointConfig(
+                onInteraction = { throw RuntimeException("listener crashed") },
+            ),
+        )
+        ep.connect()
+        val waiter = async { ep.interactionInput(InteractionInputRequest()) }
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!waiter.isCompleted && System.currentTimeMillis() < deadline) {
+            transport.injectTap(1)
+            transport.injectButton(1)
+            delay(20)
+        }
+        val result = withTimeout(5_000) { waiter.await() }
+        assertTrue(
+            result.event is InteractionEvent.Tap || result.event is InteractionEvent.Button,
+            "expected a delivered gesture, got ${result.event}",
+        )
+        assertEquals(EndpointState.READY, ep.state.value)
+        ep.close()
     }
 }
