@@ -122,11 +122,17 @@ THIRD_PARTY_NOTICES.md
   presentation templates are deliberately outside this repository.
 - Published as source (group `agent.senses`); no Maven artifact yet.
 
+## Integrating
+
+See [`docs/DEVELOPERS_GUIDE.md`](docs/DEVELOPERS_GUIDE.md) for the integration
+guide: the `/v1/sense/*` HTTP contract for harnesses in any language, and the
+embedded-module path for Kotlin/JVM or Android hosts.
+
 ## Contributing
 
-See [`docs/DEVELOPERS.md`](docs/DEVELOPERS.md) for the full developer guide: environment
-setup, the contract-test requirement for new endpoints, streaming-capability
-conventions, and the project rules enforced in review.
+See `AGENTS.md` for the repo workflow: build/test commands, the contract-test
+requirement for new endpoints, streaming-capability conventions, and the
+project rules enforced in review.
 
 ## License
 

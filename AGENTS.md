@@ -35,7 +35,7 @@ The Phase 1 `SensesDevice` interface has been removed; all endpoints implement `
 .\gradlew.bat :halo:build
 ```
 
-The `halo-engine` composite build is included automatically via `settings.gradle.kts` and expects a sibling checkout at `../halo-engine` by default. Override its location with `-PhaloEngineDir=<path>`. See `docs/DEVELOPERS.md` for the full environment setup.
+The `halo-engine` composite build is included automatically via `settings.gradle.kts` and expects a sibling checkout at `../halo-engine` by default. Override its location with `-PhaloEngineDir=<path>`. See `docs/DEVELOPERS_GUIDE.md` for the harness-integration guide.
 
 ## Project rules
 
