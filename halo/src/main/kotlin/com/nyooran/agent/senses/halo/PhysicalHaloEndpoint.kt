@@ -999,6 +999,36 @@ class PhysicalHaloEndpoint(
     }
 
     /**
+     * Set the device-local navigation HUD: the glasses render an arrow that
+     * tracks their own compass toward [bearingDeg] (absolute magnetic bearing
+     * to the current maneuver), plus [distanceMeters] and [instruction].
+     *
+     * The device redraws locally on heading changes — the host only sends a
+     * new HUD_SET when the cue changes. Requires the runtime `hud`
+     * capability (`;hud` in STATUS, runtime 3.3+); throws
+     * [SensesError.Unavailable] on older runtimes.
+     */
+    suspend fun sendHud(bearingDeg: Int, distanceMeters: Int, instruction: String) {
+        ensureReady()
+        requireRuntimeCapability("hud")
+        sendDeviceMessage(
+            HaloProtocol.HUD_SET,
+            HaloCommands.hudSet(bearingDeg, distanceMeters, instruction),
+        )
+    }
+
+    /** Stop the device-local HUD (HUD_SET mode 0). */
+    suspend fun clearHud() {
+        ensureReady()
+        if (runtimeCapabilities?.contains("hud") != true) return
+        sendDeviceMessage(HaloProtocol.HUD_SET, HaloCommands.hudClear())
+    }
+
+    /** True when the running runtime advertises the `hud` capability. */
+    val hudSupported: Boolean
+        get() = runtimeCapabilities?.contains("hud") == true
+
+    /**
      * Tune the hardware tap detector. Null fields are left unchanged.
      * [mode] is `sensitive`, `normal`, or `robust`; [axis] is `x`, `y`, or `z`.
      */
