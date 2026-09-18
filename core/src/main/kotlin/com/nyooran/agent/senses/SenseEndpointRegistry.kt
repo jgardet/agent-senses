@@ -71,6 +71,24 @@ class SenseEndpointRegistry {
     private val operationCounter = AtomicLong(0)
     private val bindMutex = Mutex()
 
+    /**
+     * Session-level preferred endpoint for ambiguous resolution.
+     *
+     * When several bound endpoints support a requested capability and the
+     * caller did not select one explicitly, [resolve] returns the preferred
+     * endpoint if it is among the eligible ones, instead of reporting
+     * [ResolveResult.Ambiguous]. The host application owns this value — for
+     * example a wearable-first app sets it to the bound physical endpoint
+     * and reverts to the phone when the wearable is unbound. `null`
+     * preserves the strict explicit-selection behavior.
+     *
+     * The choice is still visible: the resolved endpoint is recorded in
+     * every result's provenance, and callers may always override it with an
+     * explicit target.
+     */
+    @Volatile
+    var preferredEndpointId: EndpointId? = null
+
     /** Active operations per endpoint, keyed by operation ID. */
     /** A tracked operation: its coroutine job and (optional) capability tag. */
     private data class TrackedOperation(val job: Job, val capability: SenseCapability?)
@@ -114,6 +132,7 @@ class SenseEndpointRegistry {
         if (endpoint != null) {
             awaitCancellationAndDisconnect(endpointId, endpoint)
         }
+        if (preferredEndpointId == endpointId) preferredEndpointId = null
         refreshProfiles()
     }
 
@@ -129,6 +148,7 @@ class SenseEndpointRegistry {
                 runCatching { awaitCancellationAndDisconnect(id, endpoint) }
             }
             endpoints.clear()
+            preferredEndpointId = null
             refreshProfiles()
         }
     }
@@ -245,8 +265,10 @@ class SenseEndpointRegistry {
      * Resolve an endpoint for [capability], requiring explicit selection
      * when multiple endpoints are eligible.
      *
-     * Returns the single endpoint if exactly one supports the capability,
-     * or [ResolveResult.Ambiguous] with the eligible list if more than one.
+     * Returns the single endpoint if exactly one supports the capability.
+     * When several are eligible, the endpoint matching [preferredEndpointId]
+     * wins if it is among them; otherwise the caller must choose and
+     * [ResolveResult.Ambiguous] carries the eligible list.
      */
     fun resolve(capability: SenseCapability, target: EndpointId? = null): ResolveResult {
         if (target != null) {
@@ -261,7 +283,9 @@ class SenseEndpointRegistry {
         return when {
             eligible.isEmpty() -> ResolveResult.NoEndpoint(capability)
             eligible.size == 1 -> ResolveResult.Resolved(eligible[0])
-            else -> ResolveResult.Ambiguous(eligible)
+            else -> eligible.firstOrNull { it.profile.endpointId == preferredEndpointId }
+                ?.let { ResolveResult.Resolved(it) }
+                ?: ResolveResult.Ambiguous(eligible)
         }
     }
 

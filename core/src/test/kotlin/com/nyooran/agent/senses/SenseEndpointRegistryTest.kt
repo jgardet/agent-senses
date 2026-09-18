@@ -105,6 +105,76 @@ class SenseEndpointRegistryTest {
     }
 
     @Test
+    fun resolvePrefersPreferredEndpointWhenAmbiguous() = runTest {
+        val registry = SenseEndpointRegistry()
+        val halo = FakeEndpoint(makeProfile("halo-1", caps = setOf(SenseCapability.AudioInput)))
+        val phone = FakeEndpoint(makeProfile("phone-1", kind = BackendKind.PHONE, caps = setOf(SenseCapability.AudioInput)))
+        registry.bind(halo)
+        registry.bind(phone)
+        registry.preferredEndpointId = EndpointId("halo-1")
+        val result = registry.resolve(SenseCapability.AudioInput)
+        assertTrue(result is ResolveResult.Resolved)
+        assertEquals(halo, result.endpoint)
+    }
+
+    @Test
+    fun resolveFallsBackToAmbiguousWhenPreferredNotEligible() = runTest {
+        val registry = SenseEndpointRegistry()
+        registry.bind(FakeEndpoint(makeProfile("halo-1", caps = setOf(SenseCapability.AudioInput))))
+        registry.bind(FakeEndpoint(makeProfile("phone-1", kind = BackendKind.PHONE, caps = setOf(SenseCapability.AudioInput))))
+        registry.bind(FakeEndpoint(makeProfile("chat-1", kind = BackendKind.CHAT, caps = setOf(SenseCapability.TextInput))))
+        // Preferred endpoint does not support the requested capability.
+        registry.preferredEndpointId = EndpointId("chat-1")
+        val result = registry.resolve(SenseCapability.AudioInput)
+        assertTrue(result is ResolveResult.Ambiguous)
+        assertEquals(2, result.eligible.size)
+    }
+
+    @Test
+    fun resolveExplicitTargetStillWinsOverPreference() = runTest {
+        val registry = SenseEndpointRegistry()
+        registry.bind(FakeEndpoint(makeProfile("halo-1", caps = setOf(SenseCapability.AudioInput))))
+        registry.bind(FakeEndpoint(makeProfile("phone-1", kind = BackendKind.PHONE, caps = setOf(SenseCapability.AudioInput))))
+        registry.preferredEndpointId = EndpointId("halo-1")
+        val result = registry.resolve(SenseCapability.AudioInput, target = EndpointId("phone-1"))
+        assertTrue(result is ResolveResult.Resolved)
+        assertEquals(EndpointId("phone-1"), result.endpoint.profile.endpointId)
+    }
+
+    @Test
+    fun unbindClearsPreferenceWhenPreferredRemoved() = runTest {
+        val registry = SenseEndpointRegistry()
+        registry.bind(FakeEndpoint(makeProfile("halo-1", caps = setOf(SenseCapability.AudioInput))))
+        registry.bind(FakeEndpoint(makeProfile("phone-1", kind = BackendKind.PHONE, caps = setOf(SenseCapability.AudioInput))))
+        registry.preferredEndpointId = EndpointId("halo-1")
+        registry.unbind(EndpointId("halo-1"))
+        assertNull(registry.preferredEndpointId)
+        // Back to single-endpoint resolution.
+        val result = registry.resolve(SenseCapability.AudioInput)
+        assertTrue(result is ResolveResult.Resolved)
+        assertEquals(EndpointId("phone-1"), result.endpoint.profile.endpointId)
+    }
+
+    @Test
+    fun unbindAllClearsPreference() = runTest {
+        val registry = SenseEndpointRegistry()
+        registry.bind(FakeEndpoint(makeProfile("halo-1")))
+        registry.preferredEndpointId = EndpointId("halo-1")
+        registry.unbindAll()
+        assertNull(registry.preferredEndpointId)
+    }
+
+    @Test
+    fun unbindKeepsPreferenceForOtherEndpoint() = runTest {
+        val registry = SenseEndpointRegistry()
+        registry.bind(FakeEndpoint(makeProfile("halo-1")))
+        registry.bind(FakeEndpoint(makeProfile("phone-1", kind = BackendKind.PHONE)))
+        registry.preferredEndpointId = EndpointId("halo-1")
+        registry.unbind(EndpointId("phone-1"))
+        assertEquals(EndpointId("halo-1"), registry.preferredEndpointId)
+    }
+
+    @Test
     fun resolveNoEndpointReturnsNoEndpoint() = runTest {
         val registry = SenseEndpointRegistry()
         val result = registry.resolve(SenseCapability.AudioInput)
